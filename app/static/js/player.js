@@ -61,6 +61,12 @@ class AudioPlayer {
             this.updatePlayButton();
             this.renderQueue();
         });
+
+        // Window resize listener to recalculate text overflow marquee
+        window.addEventListener('resize', () => {
+            if (this._marqueeResizeTimeout) clearTimeout(this._marqueeResizeTimeout);
+            this._marqueeResizeTimeout = setTimeout(() => this.updateTextMarquees(), 100);
+        });
         this.audio.addEventListener('playing', () => {
             this.isLoading = false;
             this.isPlaying = true;
@@ -173,9 +179,19 @@ class AudioPlayer {
             this.elBottomPlayer.classList.remove('hidden');
         }
 
+        // Format artist / source line
+        let artistText = track.artist || track.channel || '';
+        if (track.playlist_name) {
+            artistText = artistText ? `${artistText} • Lista: ${track.playlist_name}` : `Lista: ${track.playlist_name}`;
+        } else if (track.is_trending || track.trending_source) {
+            artistText = artistText ? `${artistText} • ${track.trending_source || 'Tendencias'}` : 'Tendencias';
+        }
+        if (!artistText) artistText = 'Desconocido';
+
         // Update UI
         if (this.elTitle) this.elTitle.innerText = track.title || 'Canción Desconocida';
-        if (this.elArtist) this.elArtist.innerText = track.artist || track.channel || 'Desconocido';
+        if (this.elArtist) this.elArtist.innerText = artistText;
+        this.updateTextMarquees();
 
         // Set cover image
         if (this.elCover) {
@@ -299,6 +315,7 @@ class AudioPlayer {
 
         if (this.elTitle) this.elTitle.innerText = track.title || 'Previsualización';
         if (this.elArtist) this.elArtist.innerText = track.channel || 'YouTube';
+        this.updateTextMarquees();
         if (this.elCover) {
             this.elCover.src = track.thumbnail || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
         }
@@ -705,6 +722,38 @@ class AudioPlayer {
         if (window.app && typeof window.app.saveUserState === 'function') {
             window.app.saveUserState();
         }
+    }
+
+    updateMarquee(element) {
+        if (!element) return;
+        const wrapper = element.parentElement;
+        if (!wrapper) return;
+
+        element.classList.remove('is-scrolling');
+        wrapper.classList.remove('has-overflow');
+        element.style.removeProperty('--marquee-distance');
+        element.style.removeProperty('--marquee-duration');
+
+        requestAnimationFrame(() => {
+            const scrollW = element.scrollWidth;
+            const clientW = wrapper.clientWidth;
+
+            if (scrollW > clientW + 2) {
+                const distance = -(scrollW - clientW + 8);
+                const travelTime = Math.abs(distance) / 25;
+                const totalDuration = Math.max(6, Math.round(travelTime + 4));
+
+                element.style.setProperty('--marquee-distance', `${distance}px`);
+                element.style.setProperty('--marquee-duration', `${totalDuration}s`);
+                element.classList.add('is-scrolling');
+                wrapper.classList.add('has-overflow');
+            }
+        });
+    }
+
+    updateTextMarquees() {
+        this.updateMarquee(this.elTitle);
+        this.updateMarquee(this.elArtist);
     }
 
     escapeHtml(str) {

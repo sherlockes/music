@@ -204,12 +204,48 @@ input[type="range"].range-slider::-webkit-slider-thumb:hover {
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid var(--border-glass);
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
-  padding: 0.6rem 0.8rem;
+  padding: 0.5rem 0.75rem;
 }
 
 @media (min-width: 768px) {
   .bottom-player {
-    padding: 0.75rem 1.5rem;
+    padding: 0.6rem 1.5rem;
+  }
+}
+
+/* Player Text Auto-Scroll Marquee (Side-to-Side Ping-Pong) */
+.player-marquee-wrapper {
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+  white-space: nowrap;
+}
+
+.player-marquee-wrapper.has-overflow {
+  mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 10px), transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 calc(100% - 10px), transparent 100%);
+}
+
+.player-marquee-text {
+  display: inline-block;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.player-marquee-text.is-scrolling {
+  animation: marquee-ping-pong var(--marquee-duration, 8s) ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes marquee-ping-pong {
+  0%, 18% {
+    transform: translateX(0);
+  }
+  50%, 68% {
+    transform: translateX(var(--marquee-distance, 0px));
+  }
+  100% {
+    transform: translateX(0);
   }
 }
 

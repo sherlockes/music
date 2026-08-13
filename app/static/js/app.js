@@ -792,10 +792,19 @@ class MusicApp {
             return;
         }
 
+        let regionName = 'LOS40 / YouTube';
+        if (this.trendingRegion === 'los40') regionName = 'LOS40 España';
+        else if (this.trendingRegion === 'spotify_es') regionName = 'Spotify Top España';
+        else if (this.trendingRegion === 'spotify_global') regionName = 'Spotify Top Global';
+        else if (this.trendingRegion === 'es') regionName = 'YouTube España';
+        else if (this.trendingRegion === 'global') regionName = 'YouTube Global';
+
         const tracks = this.currentTrendingResults.map(item => ({
             id: item.id,
             title: item.title,
-            artist: item.channel || 'LOS40 / YouTube',
+            artist: item.channel || regionName,
+            trending_source: regionName,
+            is_trending: true,
             thumbnail: item.thumbnail,
             duration_string: item.duration_string,
             is_yt: true
@@ -1007,7 +1016,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.8",
+            version: "1.4.9",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {
@@ -1583,7 +1592,10 @@ class MusicApp {
             return;
         }
 
-        const playlistTracks = this.libraryTracks.filter(t => pl.tracks.includes(t.filename));
+        const playlistTracks = this.libraryTracks
+            .filter(t => pl.tracks.includes(t.filename))
+            .map(t => ({ ...t, playlist_name: pl.name }));
+
         if (playlistTracks.length === 0) {
             this.showNotification('No se encontraron los archivos de audio de esta lista', 'error');
             return;
