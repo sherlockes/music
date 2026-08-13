@@ -59,4 +59,4 @@ fi
 
 # Start FastAPI application with Uvicorn
 echo "=== Launching FastAPI Server on 0.0.0.0:8000 ==="
-exec uvicorn app.main:app --host 0.0.0.0 --port 8000
+exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

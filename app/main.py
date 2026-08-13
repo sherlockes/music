@@ -192,11 +192,11 @@ async def api_search(q: str = Query(..., min_length=1, description="Búsqueda de
 
 @app.get("/api/trending")
 async def api_trending(
-    region: str = Query("es", pattern="^(es|global|los40)$"),
+    region: str = Query("es", pattern="^(es|global|los40|spotify_es|spotify_global)$"),
     limit: int = Query(40, ge=1, le=100),
     refresh: bool = Query(False)
 ):
-    """Return top trending individual music singles (es = España, global = Internacional, los40 = LOS40 España)."""
+    """Return top trending individual music singles (es = España, global = Internacional, los40 = LOS40 España, spotify_es/spotify_global = Spotify Top)."""
     tracks = await get_trending_tracks(limit=limit, region=region, force_refresh=refresh)
     return {"region": region, "results": tracks}
 

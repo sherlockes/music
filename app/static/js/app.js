@@ -485,8 +485,8 @@ class MusicApp {
             // Filter out tracks under 30s or over 600s (10 minutes)
             results = results.filter(item => !item.duration || (item.duration >= 30 && item.duration <= 600));
 
-            // Exception: For LOS40 Spain, show all tracks but disable download button for library tracks
-            if (this.trendingRegion !== 'los40') {
+            // Exception: For official chart lists (LOS40 & Spotify Top), show all tracks but disable download button for library tracks
+            if (!['los40', 'spotify_es', 'spotify_global'].includes(this.trendingRegion)) {
                 results = results.filter(item => !this.isItemInLibrary(item));
             }
 
