@@ -972,30 +972,19 @@ class MusicApp {
                 window.player.renderQueue();
             }
 
-            await this.updateLibraryTrackCountBadge();
+            this.updateLibraryTrackCountBadge();
         } catch (err) {
             console.error("Failed to load library:", err);
         }
     }
 
-    async updateLibraryTrackCountBadge() {
+    updateLibraryTrackCountBadge() {
         const elTrackCount = document.getElementById('library-track-count');
         if (!elTrackCount) return;
 
-        let storagePercent = 0;
-        try {
-            const res = await this.customFetch('/api/rclone/status');
-            if (res.ok) {
-                const data = await res.json();
-                if (data.storage && data.storage.percent !== undefined) {
-                    storagePercent = data.storage.percent;
-                }
-            }
-        } catch (e) {}
-
         const count = this.libraryTracks.length;
         const temasStr = count === 1 ? '1 tema' : `${count} temas`;
-        elTrackCount.innerText = `${temasStr} y ${storagePercent}% ocupado`;
+        elTrackCount.innerText = temasStr;
     }
 
     exportLibrary() {
@@ -1006,7 +995,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.6",
+            version: "1.4.7",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {
