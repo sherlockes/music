@@ -65,7 +65,7 @@ logger = logging.getLogger("music_app")
 app = FastAPI(
     title="Music Docker App",
     description="YouTube Audio Search, Download, Streaming & Rclone Cloud Manager",
-    version="1.3.10"
+    version="1.4.4"
 )
 
 # Startup event: Rclone mount watchdog background loop
@@ -383,7 +383,7 @@ async def api_export_playlists():
 
     export_data = {
         "app": "MusicCloud",
-        "version": "1.3.10",
+        "version": "1.4.4",
         "type": "playlists",
         "exported_at": datetime.now().isoformat(),
         "total_playlists": len(export_playlists),
@@ -624,7 +624,7 @@ async def api_export_library():
 
     export_data = {
         "app": "MusicCloud",
-        "version": "1.3.10",
+        "version": "1.4.4",
         "exported_at": datetime.now().isoformat(),
         "total_tracks": len(export_tracks),
         "tracks": export_tracks

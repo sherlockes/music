@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music App - YouTube Downloader & Cloud Player</title>
     <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.3.10">
-    <link rel="alternate icon" href="/favicon.ico?v=1.3.10">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.4.4">
+    <link rel="alternate icon" href="/favicon.ico?v=1.4.4">
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -23,15 +23,15 @@
         }
     </script>
     <!-- PWA Manifest & Meta -->
-    <link rel="manifest" href="/manifest.json?v=1.3.10">
+    <link rel="manifest" href="/manifest.json?v=1.4.4">
     <meta name="theme-color" content="#0b0f19">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="MusicApp">
-    <link rel="apple-touch-icon" href="/static/icon-192.png?v=1.3.10">
+    <link rel="apple-touch-icon" href="/static/icon-192.png?v=1.4.4">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=1.3.10">
+    <link rel="stylesheet" href="/static/css/style.css?v=1.4.4">
 </head>
 <body class="bg-dark text-slate-100 min-h-screen">
 
@@ -86,8 +86,8 @@
                 </div>
                 <div>
                     <h1 class="font-bold text-base sm:text-lg leading-none gradient-text">Music Cloud</h1>
-                    <p class="text-[10px] text-purple-300/80 font-mono mt-0.5 sm:hidden">v1.4.3</p>
-                    <p class="text-[10px] text-slate-400 font-mono hidden sm:block mt-0.5">music-app &bull; v1.4.3</p>
+                    <p class="text-[10px] text-purple-300/80 font-mono mt-0.5 sm:hidden">v1.4.4</p>
+                    <p class="text-[10px] text-slate-400 font-mono hidden sm:block mt-0.5">music-app &bull; v1.4.4</p>
                 </div>
             </div>
 
@@ -287,15 +287,9 @@
 
         <!-- TAB 1.5: TRENDING (TENDENCIAS) -->
         <section id="view-trending" class="tab-view hidden space-y-4 md:space-y-6">
-            <div class="glass-card p-2.5 sm:p-4 flex items-center justify-between gap-1.5 sm:gap-3">
-                <div class="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
-                    <div class="h-9 w-9 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 text-white shadow-lg flex-shrink-0 flex items-center justify-center" title="Tendencias">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>
-                        </svg>
-                    </div>
-
-                    <!-- Reproducir Lista Completa Button (Disabled by default, icon-only on mobile) -->
+            <div class="flex items-center justify-between gap-2 w-full">
+                <!-- Left: Reproducir Button -->
+                <div class="flex-1 flex justify-start">
                     <button id="trending-play-all-btn"
                             disabled
                             onclick="window.app.playAllTrending()"
@@ -306,8 +300,22 @@
                         </svg>
                         <span class="hidden sm:inline">Reproducir Lista</span>
                     </button>
+                </div>
 
-                    <!-- Actualizar Button (Right next to Play button) -->
+                <!-- Center: Selector -->
+                <div class="flex-shrink-0 flex justify-center max-w-[60%] sm:max-w-none">
+                    <select id="trending-region-select" onchange="window.app.setTrendingRegion(this.value)"
+                            class="h-9 bg-slate-950 border border-white/10 rounded-xl px-2 sm:px-3 text-xs text-orange-300 focus:outline-none focus:border-orange-500 font-semibold cursor-pointer text-center truncate">
+                        <option value="los40" selected>📻 LOS40 España</option>
+                        <option value="spotify_es">🟢 Spotify Top España</option>
+                        <option value="spotify_global">🌐 Spotify Top Global</option>
+                        <option value="es">🇪🇸 YouTube Tendencias España</option>
+                        <option value="global">🌍 YouTube Tendencias Global</option>
+                    </select>
+                </div>
+
+                <!-- Right: Actualizar Button -->
+                <div class="flex-1 flex justify-end">
                     <button onclick="window.app.loadTrending(true)" class="h-9 w-9 sm:w-auto sm:px-3 btn-secondary text-xs flex items-center justify-center gap-1.5 flex-shrink-0" title="Actualizar tendencias">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
@@ -317,22 +325,6 @@
                         </svg>
                         <span class="hidden sm:inline">Actualizar</span>
                     </button>
-
-                    <div class="hidden lg:block min-w-0">
-                        <h2 class="text-base sm:text-lg font-bold text-white truncate">Éxitos en Tendencia</h2>
-                    </div>
-                </div>
-
-                <!-- Region Filter Select (Far Right) -->
-                <div class="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
-                    <select id="trending-region-select" onchange="window.app.setTrendingRegion(this.value)"
-                            class="h-9 bg-slate-950 border border-white/10 rounded-xl px-2 sm:px-3 text-xs text-orange-300 focus:outline-none focus:border-orange-500 font-semibold cursor-pointer flex-shrink-0">
-                        <option value="los40" selected>📻 LOS40 España</option>
-                        <option value="spotify_es">🟢 Spotify Top España</option>
-                        <option value="spotify_global">🌐 Spotify Top Global</option>
-                        <option value="es">🇪🇸 YouTube Tendencias España</option>
-                        <option value="global">🌍 YouTube Tendencias Global</option>
-                    </select>
                 </div>
             </div>
 
@@ -913,8 +905,8 @@
     <div id="toast-container" class="fixed top-20 right-6 z-50 space-y-2 max-w-sm pointer-events-none"></div>
 
     <!-- JS Scripts -->
-    <script src="/static/js/player.js?v=1.3.10"></script>
-    <script src="/static/js/rclone.js?v=1.3.10"></script>
-    <script src="/static/js/app.js?v=1.3.10"></script>
+    <script src="/static/js/player.js?v=1.4.4"></script>
+    <script src="/static/js/rclone.js?v=1.4.4"></script>
+    <script src="/static/js/app.js?v=1.4.4"></script>
 </body>
 </html>

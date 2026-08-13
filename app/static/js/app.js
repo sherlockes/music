@@ -993,7 +993,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.3.10",
+            version: "1.4.4",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {
