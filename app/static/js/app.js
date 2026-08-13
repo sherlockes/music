@@ -559,7 +559,9 @@ class MusicApp {
                 `;
 
             return `
-            <div class="glass-card p-3 flex items-center gap-3 group hover:border-orange-500/40 transition">
+            <div class="glass-card p-3 flex items-center gap-3 group hover:border-orange-500/40 transition"
+                 onmouseenter="window.app.preloadYtTrack('${item.id}')"
+                 ontouchstart="window.app.preloadYtTrack('${item.id}')">
                 <!-- Rank Badge & Thumbnail -->
                 <div class="relative w-14 h-14 sm:w-36 sm:h-24 rounded-lg overflow-hidden flex-shrink-0 bg-slate-950">
                     <img src="${item.thumbnail || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300'}" 
@@ -692,7 +694,9 @@ class MusicApp {
         }
 
         container.innerHTML = results.map(item => `
-            <div class="glass-card p-3 flex items-center gap-3 group hover:border-purple-500/40 transition">
+            <div class="glass-card p-3 flex items-center gap-3 group hover:border-purple-500/40 transition"
+                 onmouseenter="window.app.preloadYtTrack('${item.id}')"
+                 ontouchstart="window.app.preloadYtTrack('${item.id}')">
                 <!-- Small Left Thumbnail -->
                 <div class="relative w-14 h-14 sm:w-36 sm:h-24 rounded-lg overflow-hidden flex-shrink-0 bg-slate-950">
                     <img src="${item.thumbnail || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300'}" 
@@ -738,6 +742,15 @@ class MusicApp {
                 </div>
             </div>
         `).join('');
+    }
+
+    preloadYtTrack(id) {
+        if (!id) return;
+        if (!this._preloadedYtSet) this._preloadedYtSet = new Set();
+        if (this._preloadedYtSet.has(id)) return;
+        this._preloadedYtSet.add(id);
+
+        fetch(`/api/preload_yt?v=${encodeURIComponent(id)}`).catch(() => {});
     }
 
     playPreviewTrack(id, title, channel, thumbnail) {
@@ -993,7 +1006,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.4",
+            version: "1.4.5",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {

@@ -539,6 +539,11 @@ class AudioPlayer {
                         this.preloadedNextBlobUrl = URL.createObjectURL(cached.blob);
                         this.preloadedNextIndex = nextIdx;
                         console.log(`[Preloader] Next track is already in local IndexedDB cache.`);
+                    } else if (nextTrack.is_yt || nextTrack.id) {
+                        if (window.app && typeof window.app.preloadYtTrack === 'function') {
+                            console.log(`[Preloader] Pre-warming next YouTube track in background: ${nextTrack.id}`);
+                            window.app.preloadYtTrack(nextTrack.id);
+                        }
                     } else if (!nextTrack.is_yt && !nextTrack.id) {
                         console.log(`[Preloader] 5s remaining. Preloading next local track (${nextIdx}): ${nextTrack.title || trackKey}`);
                         const streamUrl = `/api/stream/${encodeURIComponent(nextTrack.filename)}`;

@@ -65,7 +65,7 @@ logger = logging.getLogger("music_app")
 app = FastAPI(
     title="Music Docker App",
     description="YouTube Audio Search, Download, Streaming & Rclone Cloud Manager",
-    version="1.4.4"
+    version="1.4.5"
 )
 
 # Startup event: Rclone mount watchdog background loop
@@ -179,14 +179,92 @@ async def api_logout():
 # API ENDPOINTS: SEARCH & DOWNLOAD
 # ==========================================
 
+TEMP_YT_CACHE_DIR = Path("/tmp/music_yt_cache")
+TEMP_YT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+ACTIVE_YT_TASKS: Dict[str, asyncio.Task] = {}
+ACTIVE_YT_LOCK = asyncio.Lock()
+
+async def ensure_yt_cache_downloading(safe_id: str, video_url: str):
+    """
+    Ensure background downloading of video_url into /tmp/music_yt_cache/{safe_id}.m4a
+    If already cached or currently downloading, returns immediately.
+    """
+    cache_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a"
+    tmp_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a.tmp"
+
+    if cache_file.exists() and cache_file.stat().st_size > 100000:
+        return
+
+    async with ACTIVE_YT_LOCK:
+        if safe_id in ACTIVE_YT_TASKS and not ACTIVE_YT_TASKS[safe_id].done():
+            return
+
+        async def _download_job():
+            cmd = [
+                "yt-dlp",
+                "--no-playlist",
+                "--no-part",
+                "-o", str(tmp_file),
+                "-f", "bestaudio[ext=m4a]/bestaudio/best",
+                "--extractor-args", "youtube:player_client=android,web",
+                "--no-warnings",
+                video_url
+            ]
+            try:
+                logger.info(f"[YT Cache] Starting background pre-download for {safe_id}...")
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                await proc.communicate()
+                if proc.returncode == 0 and tmp_file.exists() and tmp_file.stat().st_size > 100000:
+                    tmp_file.replace(cache_file)
+                    logger.info(f"[YT Cache] Stream cached successfully: {cache_file.name}")
+                else:
+                    logger.warning(f"[YT Cache] Download process for {safe_id} returned code {proc.returncode}")
+            except Exception as e:
+                logger.error(f"[YT Cache] Error downloading {safe_id}: {e}")
+            finally:
+                if tmp_file.exists() and not cache_file.exists():
+                    try:
+                        tmp_file.unlink()
+                    except Exception:
+                        pass
+                async with ACTIVE_YT_LOCK:
+                    ACTIVE_YT_TASKS.pop(safe_id, None)
+
+        task = asyncio.create_task(_download_job())
+        ACTIVE_YT_TASKS[safe_id] = task
+
+
+def prewarm_yt_results(results: list, top_n: int = 3):
+    """Start background stream caching for top_n YouTube tracks from search or trending."""
+    count = 0
+    for r in results:
+        v_id = r.get("id") or r.get("video_id")
+        if not v_id:
+            continue
+        safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', v_id)
+        cache_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a"
+        if not cache_file.exists():
+            video_url = f"https://www.youtube.com/watch?v={safe_id}"
+            asyncio.create_task(ensure_yt_cache_downloading(safe_id, video_url))
+            count += 1
+            if count >= top_n:
+                break
+
+
 @app.get("/api/search")
 async def api_search(q: str = Query(..., min_length=1, description="Búsqueda de canción o artista")):
     """
     Search YouTube using yt-dlp flat-playlist json dump.
-    Returns top interactive results.
+    Returns top interactive results and pre-warms top audio streams in background cache.
     """
     logger.info(f"Searching YouTube for: '{q}'")
     results = await search_youtube(q, limit=40)
+    prewarm_yt_results(results, top_n=3)
     return {"query": q, "results": results}
 
 
@@ -196,20 +274,35 @@ async def api_trending(
     limit: int = Query(40, ge=1, le=100),
     refresh: bool = Query(False)
 ):
-    """Return top trending individual music singles (es = España, global = Internacional, los40 = LOS40 España, spotify_es/spotify_global = Spotify Top)."""
+    """Return top trending individual music singles and pre-warms top audio streams in background cache."""
     tracks = await get_trending_tracks(limit=limit, region=region, force_refresh=refresh)
+    prewarm_yt_results(tracks, top_n=3)
     return {"region": region, "results": tracks}
 
 
-TEMP_YT_CACHE_DIR = Path("/tmp/music_yt_cache")
-TEMP_YT_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+@app.get("/api/preload_yt")
+async def api_preload_yt(v: str = Query(..., description="YouTube Video ID o URL")):
+    """Pre-warm YouTube track stream in background cache."""
+    v_id = v.strip()
+    if "youtube.com" in v_id or "youtu.be" in v_id:
+        m = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', v_id)
+        if m:
+            v_id = m.group(1)
+    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', v_id)
+    video_url = f"https://www.youtube.com/watch?v={v_id}" if len(v_id) == 11 else v
+    cache_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a"
+    if cache_file.exists() and cache_file.stat().st_size > 100000:
+        return {"status": "cached", "safe_id": safe_id}
+    await ensure_yt_cache_downloading(safe_id, video_url)
+    return {"status": "prewarming", "safe_id": safe_id}
+
 
 @app.get("/api/stream_yt")
 async def api_stream_yt(
     v: str = Query(..., description="YouTube Video ID o URL")
 ):
     """
-    Stream live direct audio from YouTube using yt-dlp piped stdout.
+    Stream live direct audio from YouTube using background worker + growing file stream.
     Caches stream to /tmp/music_yt_cache for instant subsequent playback and offline save requests.
     """
     v_id = v.strip()
@@ -219,12 +312,11 @@ async def api_stream_yt(
             v_id = m.group(1)
 
     video_url = f"https://www.youtube.com/watch?v={v_id}" if len(v_id) == 11 else v
-
     safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', v_id)
     cache_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a"
     tmp_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a.tmp"
 
-    # If completed cached file exists, return FileResponse instantly with Range support!
+    # 1. If completed cached file exists, return FileResponse instantly with Range support!
     if cache_file.exists() and cache_file.stat().st_size > 100000:
         return FileResponse(
             path=cache_file,
@@ -232,68 +324,60 @@ async def api_stream_yt(
             headers={"Cache-Control": "public, max-age=86400"}
         )
 
-    cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "-o", "-",
-        "-f", "bestaudio[ext=m4a]/bestaudio/best",
-        "--no-warnings",
-        video_url
-    ]
+    # 2. Ensure background download task is active
+    await ensure_yt_cache_downloading(safe_id, video_url)
 
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-    except Exception as e:
-        logger.error(f"Error starting yt-dlp stream process: {e}")
-        raise HTTPException(status_code=500, detail="Error al iniciar streaming de audio")
-
+    # 3. Stream from growing file (or completed cache file if completed during wait)
     async def stream_generator():
-        out_f = None
-        try:
-            out_f = open(tmp_file, "wb")
-        except Exception as e:
-            logger.warning(f"Could not open tmp stream cache file {tmp_file}: {e}")
+        offset = 0
+        start_time = time.time()
 
-        is_complete = False
-        try:
-            while True:
-                chunk = await proc.stdout.read(64 * 1024)
-                if not chunk:
-                    is_complete = True
-                    break
-                if out_f:
+        # Wait up to 10s for tmp_file or cache_file to appear with initial bytes
+        while not cache_file.exists() and not (tmp_file.exists() and tmp_file.stat().st_size > 0) and (time.time() - start_time) < 10.0:
+            await asyncio.sleep(0.05)
+
+        target_file = cache_file if cache_file.exists() else tmp_file
+
+        while True:
+            # If target_file switched to cache_file (download finished)
+            if not target_file.exists() and cache_file.exists():
+                target_file = cache_file
+
+            if target_file.exists():
+                try:
+                    curr_size = target_file.stat().st_size
+                    if curr_size > offset:
+                        with open(target_file, "rb") as f:
+                            f.seek(offset)
+                            chunk = f.read(min(curr_size - offset, 128 * 1024))
+                            if chunk:
+                                offset += len(chunk)
+                                yield chunk
+                except Exception as e:
+                    logger.debug(f"[Stream Generator] File read error: {e}")
+
+            # Check if download job is complete
+            task = ACTIVE_YT_TASKS.get(safe_id)
+            is_active = task is not None and not task.done()
+
+            # End stream if download is done and no more bytes to read
+            if not is_active:
+                final_file = cache_file if cache_file.exists() else target_file
+                if final_file.exists():
                     try:
-                        out_f.write(chunk)
+                        curr_size = final_file.stat().st_size
+                        if curr_size > offset:
+                            with open(final_file, "rb") as f:
+                                f.seek(offset)
+                                chunk = f.read()
+                                if chunk:
+                                    offset += len(chunk)
+                                    yield chunk
                     except Exception:
                         pass
-                yield chunk
-        finally:
-            if out_f:
-                try:
-                    out_f.close()
-                except Exception:
-                    pass
-            if proc.returncode is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+                break
 
-            if is_complete and tmp_file.exists():
-                try:
-                    tmp_file.replace(cache_file)
-                    logger.info(f"Stream cached successfully: {cache_file.name}")
-                except Exception as e:
-                    logger.warning(f"Could not rename tmp cache file: {e}")
-            elif tmp_file.exists():
-                try:
-                    tmp_file.unlink()
-                except Exception:
-                    pass
+            await asyncio.sleep(0.05)
 
     return StreamingResponse(
         stream_generator(),
@@ -383,7 +467,7 @@ async def api_export_playlists():
 
     export_data = {
         "app": "MusicCloud",
-        "version": "1.4.4",
+        "version": "1.4.5",
         "type": "playlists",
         "exported_at": datetime.now().isoformat(),
         "total_playlists": len(export_playlists),
@@ -624,7 +708,7 @@ async def api_export_library():
 
     export_data = {
         "app": "MusicCloud",
-        "version": "1.4.4",
+        "version": "1.4.5",
         "exported_at": datetime.now().isoformat(),
         "total_tracks": len(export_tracks),
         "tracks": export_tracks
