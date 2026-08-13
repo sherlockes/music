@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Music App - YouTube Downloader & Cloud Player</title>
     <!-- Favicon -->
-    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.4.7">
-    <link rel="alternate icon" href="/favicon.ico?v=1.4.7">
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.4.8">
+    <link rel="alternate icon" href="/favicon.ico?v=1.4.8">
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -23,15 +23,15 @@
         }
     </script>
     <!-- PWA Manifest & Meta -->
-    <link rel="manifest" href="/manifest.json?v=1.4.7">
+    <link rel="manifest" href="/manifest.json?v=1.4.8">
     <meta name="theme-color" content="#0b0f19">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="MusicApp">
-    <link rel="apple-touch-icon" href="/static/icon-192.png?v=1.4.7">
+    <link rel="apple-touch-icon" href="/static/icon-192.png?v=1.4.8">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=1.4.7">
+    <link rel="stylesheet" href="/static/css/style.css?v=1.4.8">
 </head>
 <body class="bg-dark text-slate-100 min-h-screen">
 
@@ -86,8 +86,8 @@
                 </div>
                 <div>
                     <h1 class="font-bold text-base sm:text-lg leading-none gradient-text">Music Cloud</h1>
-                    <p class="text-[10px] text-purple-300/80 font-mono mt-0.5 sm:hidden">v1.4.7</p>
-                    <p class="text-[10px] text-slate-400 font-mono hidden sm:block mt-0.5">music-app &bull; v1.4.7</p>
+                    <p class="text-[10px] text-purple-300/80 font-mono mt-0.5 sm:hidden">v1.4.8</p>
+                    <p class="text-[10px] text-slate-400 font-mono hidden sm:block mt-0.5">music-app &bull; v1.4.8</p>
                 </div>
             </div>
 
@@ -259,7 +259,7 @@
                     <button id="search-play-all-btn"
                             disabled
                             onclick="window.app.playAllSearch()"
-                            class="h-9 w-9 sm:w-auto sm:px-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs rounded-xl flex items-center justify-center gap-1.5 font-semibold shadow-md transition transform active:scale-95 flex-shrink-0 opacity-40 cursor-not-allowed"
+                            class="h-9 w-9 sm:w-auto sm:px-3 btn-secondary text-xs flex items-center justify-center gap-1.5 flex-shrink-0 opacity-40 cursor-not-allowed"
                             title="Reproducir todas las canciones encontradas">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 fill-current text-white flex-shrink-0" viewBox="0 0 24 24">
                             <polygon points="5 3 19 12 5 21 5 3"/>
@@ -293,7 +293,7 @@
                     <button id="trending-play-all-btn"
                             disabled
                             onclick="window.app.playAllTrending()"
-                            class="h-9 w-9 sm:w-auto sm:px-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs rounded-xl flex items-center justify-center gap-1.5 font-semibold shadow-md transition transform active:scale-95 flex-shrink-0 opacity-40 cursor-not-allowed"
+                            class="h-9 w-9 sm:w-auto sm:px-3 btn-secondary text-xs flex items-center justify-center gap-1.5 flex-shrink-0 opacity-40 cursor-not-allowed"
                             title="Reproducir todas las canciones encontradas">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 fill-current text-white flex-shrink-0" viewBox="0 0 24 24">
                             <polygon points="5 3 19 12 5 21 5 3"/>
@@ -342,11 +342,18 @@
                 <div class="flex items-center justify-between gap-3">
                     <div class="flex items-center gap-2 sm:gap-3">
                         <h2 class="text-lg sm:text-xl font-bold text-white">Biblioteca</h2>
-                        <span id="library-track-count" class="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-800/40 font-mono whitespace-nowrap">0 temas</span>
+                        <span id="library-track-count" class="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-800/40 font-mono whitespace-nowrap">0</span>
                     </div>
 
-                    <!-- Library Actions: Export, Import, Refresh -->
+                    <!-- Library Actions: Reproducir, Export, Import, Refresh -->
                     <div class="flex items-center gap-1.5 sm:gap-2">
+                        <!-- Reproducir Button -->
+                        <button id="library-play-all-btn" onclick="window.app.playFilteredLibrary()" class="btn-secondary p-2 sm:py-1.5 sm:px-3 text-xs flex items-center gap-1.5" title="Reproducir resultados de la biblioteca">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 fill-current text-white flex-shrink-0" viewBox="0 0 24 24">
+                                <polygon points="5 3 19 12 5 21 5 3"/>
+                            </svg>
+                            <span class="hidden sm:inline">Reproducir</span>
+                        </button>
                         <!-- Exportar Button -->
                         <button onclick="window.app.exportLibrary()" class="btn-secondary p-2 sm:py-1.5 sm:px-3 text-xs flex items-center gap-1.5 bg-slate-900/80 hover:bg-slate-800 text-slate-200 border border-slate-700/60 rounded-xl transition shadow" title="Exportar la lista de canciones de la biblioteca a un archivo JSON">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -905,8 +912,8 @@
     <div id="toast-container" class="fixed top-20 right-6 z-50 space-y-2 max-w-sm pointer-events-none"></div>
 
     <!-- JS Scripts -->
-    <script src="/static/js/player.js?v=1.4.7"></script>
-    <script src="/static/js/rclone.js?v=1.4.7"></script>
-    <script src="/static/js/app.js?v=1.4.7"></script>
+    <script src="/static/js/player.js?v=1.4.8"></script>
+    <script src="/static/js/rclone.js?v=1.4.8"></script>
+    <script src="/static/js/app.js?v=1.4.8"></script>
 </body>
 </html>

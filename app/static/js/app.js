@@ -978,13 +978,25 @@ class MusicApp {
         }
     }
 
-    updateLibraryTrackCountBadge() {
+    updateLibraryTrackCountBadge(count = null) {
         const elTrackCount = document.getElementById('library-track-count');
         if (!elTrackCount) return;
 
-        const count = this.libraryTracks.length;
-        const temasStr = count === 1 ? '1 tema' : `${count} temas`;
-        elTrackCount.innerText = temasStr;
+        const total = (count !== null && count !== undefined) ? count : (this.currentFilteredLibraryTracks ? this.currentFilteredLibraryTracks.length : this.libraryTracks.length);
+        elTrackCount.innerText = total;
+    }
+
+    playFilteredLibrary() {
+        const tracks = this.currentFilteredLibraryTracks || this.libraryTracks || [];
+        if (tracks.length === 0) {
+            this.showToast("No hay canciones disponibles en la biblioteca");
+            return;
+        }
+
+        if (window.player) {
+            window.player.setPlaylist(tracks, 0);
+            this.showToast(`Reproduciendo biblioteca (${tracks.length} canciones)`);
+        }
     }
 
     exportLibrary() {
@@ -995,7 +1007,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.7",
+            version: "1.4.8",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {
@@ -1136,6 +1148,8 @@ class MusicApp {
             );
         }
 
+        this.currentFilteredLibraryTracks = tracks;
+        this.updateLibraryTrackCountBadge(tracks.length);
         this.renderLibraryView(tracks);
     }
 
@@ -1145,9 +1159,14 @@ class MusicApp {
 
     async renderLibraryView(tracks) {
         const container = document.getElementById('library-tracks');
+        const playBtn = document.getElementById('library-play-all-btn');
         if (!container) return;
 
         if (tracks.length === 0) {
+            if (playBtn) {
+                playBtn.disabled = true;
+                playBtn.classList.add('opacity-40', 'cursor-not-allowed');
+            }
             container.innerHTML = `
                 <div class="glass-card p-12 text-center text-gray-400 col-span-full">
                     <svg xmlns="http://www.w3.org/2000/svg" class="w-16 h-16 mx-auto text-purple-400/40 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1158,6 +1177,11 @@ class MusicApp {
                 </div>
             `;
             return;
+        }
+
+        if (playBtn) {
+            playBtn.disabled = false;
+            playBtn.classList.remove('opacity-40', 'cursor-not-allowed');
         }
 
         let offlineSet = new Set();
@@ -1249,8 +1273,9 @@ class MusicApp {
     }
 
     playLibraryTrack(index) {
-        if (window.player) {
-            window.player.setPlaylist(this.libraryTracks, index);
+        const tracks = this.currentFilteredLibraryTracks || this.libraryTracks;
+        if (window.player && tracks && tracks[index]) {
+            window.player.setPlaylist(tracks, index);
         }
     }
 
@@ -1431,7 +1456,7 @@ class MusicApp {
                 </div>
 
                 <div class="flex items-center gap-2 pt-0 sm:pt-1">
-                    <button onclick="window.app.playPlaylist('${pl.id}')" class="btn-primary text-xs py-2 px-3 flex-1 flex items-center justify-center gap-1.5">
+                    <button onclick="window.app.playPlaylist('${pl.id}')" class="btn-secondary text-xs py-2 px-3 flex-1 flex items-center justify-center gap-1.5">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 fill-current ml-0.5" viewBox="0 0 24 24">
                             <polygon points="5 3 19 12 5 21 5 3"/>
                         </svg>
