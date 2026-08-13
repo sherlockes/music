@@ -98,7 +98,9 @@ async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
 TRENDING_CACHE: Dict[str, Dict[str, Any]] = {
     "es": {"tracks": [], "last_fetched": 0},
     "global": {"tracks": [], "last_fetched": 0},
-    "los40": {"tracks": [], "last_fetched": 0}
+    "los40": {"tracks": [], "last_fetched": 0},
+    "spotify_es": {"tracks": [], "last_fetched": 0},
+    "spotify_global": {"tracks": [], "last_fetched": 0}
 }
 
 MIX_KEYWORDS = ["mix", "compilation", "recopilatorio", "sesion", "sesión", "enganchado", "completo", "horas", "top 50", "top 20", "top 100", "full album", "album", "áldum"]
@@ -126,7 +128,32 @@ async def fetch_los40_official_chart() -> List[Tuple[str, str]]:
         logger.error(f"Error scraping https://los40.com/lista40/: {e}")
         return []
 
-async def fetch_single_yt_track(artist: str, song: str, rank: int, sem: Optional[asyncio.Semaphore] = None) -> Optional[Dict[str, Any]]:
+async def fetch_spotify_chart(chart_type: str = "es") -> List[Tuple[str, str]]:
+    """Scrape official daily Spotify Top Chart from Kworb/Spotify Charts."""
+    import urllib.request
+    import html
+    url = "https://kworb.net/spotify/country/es_daily.html" if chart_type == "es" else "https://kworb.net/spotify/country/global_daily.html"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+    try:
+        loop = asyncio.get_event_loop()
+        def _read_url():
+            return urllib.request.urlopen(req, timeout=10).read().decode('utf-8', errors='ignore')
+        html_doc = await loop.run_in_executor(None, _read_url)
+
+        rows = re.findall(r'<td class=\"text mp\">(.*?)</td>', html_doc, re.DOTALL)
+        results = []
+        for r in rows:
+            m = re.search(r'<a href=\"[^\"]*artist[^\"]*\">(.*?)</a>\s*-\s*<a href=\"[^\"]*track[^\"]*\">(.*?)</a>', r, re.DOTALL)
+            if m:
+                artist = html.unescape(re.sub(r'<[^>]+>', '', m.group(1)).strip())
+                song = html.unescape(re.sub(r'<[^>]+>', '', m.group(2)).strip())
+                results.append((artist, song))
+        return results
+    except Exception as e:
+        logger.error(f"Error scraping Spotify chart ({chart_type}): {e}")
+        return []
+
+async def fetch_single_yt_track(artist: str, song: str, rank: int, sem: Optional[asyncio.Semaphore] = None, custom_channel: str = "LOS40 España") -> Optional[Dict[str, Any]]:
     query = f"{artist} {song} video oficial"
     search_target = f"ytsearch1:{query}"
     cmd = ["yt-dlp", search_target, "--dump-json", "--flat-playlist", "--skip-download", "--no-warnings"]
@@ -148,7 +175,7 @@ async def fetch_single_yt_track(artist: str, song: str, rank: int, sem: Optional
                                 "id": v_id,
                                 "url": f"https://www.youtube.com/watch?v={v_id}" if v_id else data.get("url", ""),
                                 "title": f"#{rank} {artist} - {song}",
-                                "channel": "LOS40 España",
+                                "channel": custom_channel,
                                 "duration": duration,
                                 "duration_string": format_duration(duration),
                                 "thumbnail": f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg" if v_id else ""
@@ -190,6 +217,10 @@ async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh
 
     if region_lower in ["los40", "40", "los_40"]:
         clean_region = "los40"
+    elif region_lower in ["spotify_es", "spotify-es"]:
+        clean_region = "spotify_es"
+    elif region_lower in ["spotify_global", "spotify-global", "spotify"]:
+        clean_region = "spotify_global"
     elif region_lower == "global":
         clean_region = "global"
     else:
@@ -205,7 +236,7 @@ async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh
         if chart:
             items_to_search = chart[:limit]
             sem = asyncio.Semaphore(10)
-            tasks = [fetch_single_yt_track(a, s, i + 1, sem=sem) for i, (a, s) in enumerate(items_to_search)]
+            tasks = [fetch_single_yt_track(a, s, i + 1, sem=sem, custom_channel="LOS40 España") for i, (a, s) in enumerate(items_to_search)]
             search_results = await asyncio.gather(*tasks, return_exceptions=True)
             los40_results = [r for r in search_results if isinstance(r, dict) and r]
             if los40_results:
@@ -215,9 +246,29 @@ async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh
                 }
                 return los40_results
         
-        # Fallback to existing stale cache if fresh fetch failed
         if cache_entry["tracks"]:
             logger.warning("LOS40 fresh chart fetch failed or was empty; returning stale cached tracks.")
+            return cache_entry["tracks"]
+
+    if clean_region in ["spotify_es", "spotify_global"]:
+        chart_type = "es" if clean_region == "spotify_es" else "global"
+        channel_label = "Spotify Top España" if clean_region == "spotify_es" else "Spotify Top Global"
+        chart = await fetch_spotify_chart(chart_type)
+        if chart:
+            items_to_search = chart[:limit]
+            sem = asyncio.Semaphore(10)
+            tasks = [fetch_single_yt_track(a, s, i + 1, sem=sem, custom_channel=channel_label) for i, (a, s) in enumerate(items_to_search)]
+            search_results = await asyncio.gather(*tasks, return_exceptions=True)
+            spotify_results = [r for r in search_results if isinstance(r, dict) and r]
+            if spotify_results:
+                TRENDING_CACHE[clean_region] = {
+                    "tracks": spotify_results,
+                    "last_fetched": now
+                }
+                return spotify_results
+
+        if cache_entry["tracks"]:
+            logger.warning(f"Spotify {clean_region} fresh chart fetch failed; returning cached tracks.")
             return cache_entry["tracks"]
 
     # Region-specific search target for general search

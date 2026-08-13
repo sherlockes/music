@@ -390,13 +390,22 @@ class AudioPlayer {
     playNext() {
         if (this.playlist.length === 0) return;
 
-        if (this.isShuffle) {
-            let nextIdx = Math.floor(Math.random() * this.playlist.length);
-            this.loadTrack(nextIdx, true);
+        let nextIdx = -1;
+        if (this.preloadedNextIndex >= 0 && this.preloadedNextIndex < this.playlist.length) {
+            nextIdx = this.preloadedNextIndex;
+        } else if (this.isShuffle) {
+            if (this.playlist.length > 1) {
+                do {
+                    nextIdx = Math.floor(Math.random() * this.playlist.length);
+                } while (nextIdx === this.currentIndex);
+            } else {
+                nextIdx = 0;
+            }
         } else {
-            let nextIdx = (this.currentIndex + 1) % this.playlist.length;
-            this.loadTrack(nextIdx, true);
+            nextIdx = (this.currentIndex + 1) % this.playlist.length;
         }
+
+        this.loadTrack(nextIdx, true);
     }
 
     playPrevious() {
