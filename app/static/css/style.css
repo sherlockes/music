@@ -34,12 +34,12 @@ body {
     radial-gradient(at 100% 100%, rgba(236, 72, 153, 0.1) 0px, transparent 50%),
     radial-gradient(at 50% 50%, rgba(139, 92, 246, 0.08) 0px, transparent 50%);
   background-attachment: fixed;
-  padding-bottom: 98px; /* Space for compact mobile bottom player */
+  padding-bottom: 120px; /* Space for mobile bottom player */
 }
 
 @media (min-width: 768px) {
   body {
-    padding-bottom: 72px; /* Space for compact desktop bottom player */
+    padding-bottom: 85px; /* Space for desktop bottom player */
   }
 }
 
@@ -204,12 +204,12 @@ input[type="range"].range-slider::-webkit-slider-thumb:hover {
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid var(--border-glass);
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
-  padding: 0.35rem 0.65rem;
+  padding: 0.5rem 0.75rem;
 }
 
 @media (min-width: 768px) {
   .bottom-player {
-    padding: 0.4rem 1.25rem;
+    padding: 0.6rem 1.5rem;
   }
 }
 
