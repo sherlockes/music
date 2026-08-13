@@ -1,4 +1,4 @@
-const CACHE_NAME = 'music-app-v1.3.10';
+const CACHE_NAME = 'music-app-v1.4.0';
 
 self.addEventListener('install', event => {
   self.skipWaiting();

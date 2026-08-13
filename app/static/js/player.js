@@ -94,6 +94,7 @@ class AudioPlayer {
             this.elSeekSlider.addEventListener('change', (e) => {
                 const targetTime = (e.target.value / 100) * (this.audio.duration || 0);
                 this.audio.currentTime = targetTime;
+                this.triggerSaveUserState();
             });
         }
 
@@ -103,6 +104,7 @@ class AudioPlayer {
                 this.audio.volume = e.target.value / 100;
                 this.audio.muted = false;
                 this.updateVolumeIcon();
+                this.triggerSaveUserState();
             });
         }
 
@@ -156,6 +158,7 @@ class AudioPlayer {
             this.currentIndex = -1;
         }
         this.renderQueue();
+        this.triggerSaveUserState();
     }
 
     async loadTrack(index, autoPlay = true) {
@@ -186,6 +189,7 @@ class AudioPlayer {
         }
 
         this.audio.pause();
+        this.triggerSaveUserState();
 
         let streamUrl = '';
         let isOfflineCache = false;
@@ -373,11 +377,13 @@ class AudioPlayer {
             this.audio.play().then(() => {
                 this.isPlaying = true;
                 this.updatePlayButton();
+                this.triggerSaveUserState();
             }).catch(console.error);
         } else {
             this.audio.pause();
             this.isPlaying = false;
             this.updatePlayButton();
+            this.triggerSaveUserState();
         }
     }
 
@@ -650,6 +656,12 @@ class AudioPlayer {
         if (typeof state.volume === 'number' && this.audio) {
             this.audio.volume = state.volume;
             if (this.elVolumeSlider) this.elVolumeSlider.value = state.volume;
+        }
+    }
+
+    triggerSaveUserState() {
+        if (window.app && typeof window.app.saveUserState === 'function') {
+            window.app.saveUserState();
         }
     }
 

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 import mimetypes
 import urllib.parse
 from pathlib import Path
@@ -896,6 +897,7 @@ class UserStatePayload(BaseModel):
     last_search_results: Optional[list] = []
     last_trending_region: Optional[str] = "los40"
     last_trending_results: Optional[list] = []
+    updated_at: Optional[float] = 0.0
 
 @app.get("/api/user/state")
 async def api_get_user_state(username: str = Query("invitado")):
@@ -905,9 +907,12 @@ async def api_get_user_state(username: str = Query("invitado")):
 @app.post("/api/user/state")
 async def api_save_user_state(payload: UserStatePayload, username: str = Query("invitado")):
     states = load_user_states()
-    states[username] = payload.dict()
+    data = payload.dict()
+    if not data.get("updated_at") or data.get("updated_at") == 0:
+        data["updated_at"] = time.time() * 1000
+    states[username] = data
     save_user_states(states)
-    return {"status": "ok"}
+    return {"status": "ok", "updated_at": data["updated_at"]}
 
 # ==========================================
 # PWA SPECIFIC ROUTES

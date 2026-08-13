@@ -50,6 +50,9 @@ class MusicApp {
             this.setStartupStatus('Conectando con el servidor VPS (NPM)...', 20);
             await withTimeout(this.fetchUserMe(), 3000);
 
+            // Restore user state from local cache instantly to prevent delay/duplicate network calls
+            this.loadLocalUserState();
+
             this.setStartupStatus('Cargando tu biblioteca de música y Rclone...', 50);
             await withTimeout(this.loadLibrary(), 5000);
 
@@ -277,7 +280,118 @@ class MusicApp {
         this.saveUserState();
     }
 
-    async saveUserState() {
+    getLocalUserState() {
+        try {
+            const key = `music_app_user_state_${this.currentUser || 'invitado'}`;
+            const raw = localStorage.getItem(key);
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (e) {
+            console.debug("Error reading local user state:", e);
+            return null;
+        }
+    }
+
+    setLocalUserState(state) {
+        try {
+            const key = `music_app_user_state_${this.currentUser || 'invitado'}`;
+            localStorage.setItem(key, JSON.stringify(state));
+        } catch (e) {
+            console.debug("Error writing local user state:", e);
+        }
+    }
+
+    applyStateToUI(state) {
+        if (!state || typeof state !== 'object') return;
+
+        // Restore Search tab state
+        if (state.last_search_query) {
+            this.lastSearchQuery = state.last_search_query;
+            const searchInput = document.getElementById('search-input');
+            if (searchInput) searchInput.value = this.lastSearchQuery;
+        }
+        if (state.last_search_results && Array.isArray(state.last_search_results) && state.last_search_results.length > 0) {
+            this.lastSearchResults = state.last_search_results;
+            if (this.currentTab === 'search') {
+                this.renderSearchResults(this.lastSearchResults);
+            }
+        }
+
+        // Restore Trending tab state
+        if (state.last_trending_region) {
+            this.trendingRegion = state.last_trending_region;
+            const selectEl = document.getElementById('trending-region-select');
+            if (selectEl) selectEl.value = this.trendingRegion;
+        }
+        if (state.last_trending_results && Array.isArray(state.last_trending_results) && state.last_trending_results.length > 0) {
+            this.currentTrendingResults = state.last_trending_results;
+            if (this.currentTab === 'trending') {
+                this.renderTrendingResults(this.currentTrendingResults);
+            }
+        }
+
+        // Restore Player state
+        if (state.last_player_state && window.player) {
+            window.player.restoreState(state.last_player_state);
+        }
+
+        // Restore active Tab
+        if (state.last_tab) {
+            this.switchTab(state.last_tab, false);
+        } else {
+            this.switchTab('playlists', false);
+        }
+    }
+
+    loadLocalUserState() {
+        const localState = this.getLocalUserState();
+        if (localState) {
+            console.log("[StateSync] Restoring state instantly from local cache timestamp:", localState.updated_at);
+            this.applyStateToUI(localState);
+        }
+    }
+
+    async loadUserState() {
+        const localState = this.getLocalUserState();
+
+        // 1. Instantly apply local cache if present
+        if (localState) {
+            this.applyStateToUI(localState);
+        }
+
+        // 2. Fetch server state to compare timestamps for multi-device sync
+        try {
+            const res = await this.customFetch(`/api/user/state?username=${encodeURIComponent(this.currentUser)}`);
+            if (!res.ok) return;
+            const serverState = await res.json();
+            if (!serverState || Object.keys(serverState).length === 0) {
+                if (localState) {
+                    this.syncStateToServer(localState);
+                }
+                return;
+            }
+
+            const serverTime = typeof serverState.updated_at === 'number' ? serverState.updated_at : 0;
+            const localTime = (localState && typeof localState.updated_at === 'number') ? localState.updated_at : 0;
+
+            if (serverTime > localTime) {
+                console.log(`[StateSync] Server state is newer (${serverTime} > ${localTime}). Updating UI and local cache.`);
+                this.applyStateToUI(serverState);
+                this.setLocalUserState(serverState);
+            } else if (localTime > serverTime) {
+                console.log(`[StateSync] Local state is newer (${localTime} > ${serverTime}). Uploading local state to server.`);
+                this.syncStateToServer(localState);
+            } else if (!localState) {
+                console.log("[StateSync] Applying server state for new session.");
+                this.applyStateToUI(serverState);
+                this.setLocalUserState(serverState);
+            }
+        } catch (err) {
+            console.debug("[StateSync] Server state fetch failed/offline, using local state:", err);
+        }
+    }
+
+    saveUserState(forceServer = false) {
         try {
             const payload = {
                 last_tab: this.currentTab || 'playlists',
@@ -285,73 +399,46 @@ class MusicApp {
                 last_search_query: this.lastSearchQuery || '',
                 last_search_results: this.lastSearchResults || [],
                 last_trending_region: this.trendingRegion || 'los40',
-                last_trending_results: this.currentTrendingResults || []
+                last_trending_results: this.currentTrendingResults || [],
+                updated_at: Date.now()
             };
 
+            // "Es importante que lo último en guardarse sea la info en la caché para que siempre sea la más reciente."
+            this.setLocalUserState(payload);
+
+            if (this._saveStateTimer) clearTimeout(this._saveStateTimer);
+
+            if (forceServer) {
+                this.syncStateToServer(payload);
+            } else {
+                this._saveStateTimer = setTimeout(() => {
+                    this.syncStateToServer(payload);
+                }, 1000);
+            }
+        } catch (err) {
+            console.debug("Error saving user state:", err);
+        }
+    }
+
+    async syncStateToServer(payload) {
+        try {
             await this.customFetch(`/api/user/state?username=${encodeURIComponent(this.currentUser)}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
         } catch (err) {
-            console.debug("Error saving user state:", err);
-        }
-    }
-
-    async loadUserState() {
-        try {
-            const res = await this.customFetch(`/api/user/state?username=${encodeURIComponent(this.currentUser)}`);
-            if (!res.ok) {
-                this.switchTab('playlists', false);
-                return;
-            }
-            const state = await res.json();
-            if (!state || Object.keys(state).length === 0) {
-                this.switchTab('playlists', false);
-                return;
-            }
-
-            // Restore Search tab state
-            if (state.last_search_query) {
-                this.lastSearchQuery = state.last_search_query;
-                const searchInput = document.getElementById('search-input');
-                if (searchInput) searchInput.value = this.lastSearchQuery;
-            }
-            if (state.last_search_results && Array.isArray(state.last_search_results) && state.last_search_results.length > 0) {
-                this.lastSearchResults = state.last_search_results;
-                this.renderSearchResults(this.lastSearchResults);
-            }
-
-            // Restore Trending tab state
-            if (state.last_trending_region) {
-                this.trendingRegion = state.last_trending_region;
-                const selectEl = document.getElementById('trending-region-select');
-                if (selectEl) selectEl.value = this.trendingRegion;
-            }
-            if (state.last_trending_results && Array.isArray(state.last_trending_results) && state.last_trending_results.length > 0) {
-                this.currentTrendingResults = state.last_trending_results;
-                this.renderTrendingResults(this.currentTrendingResults);
-            }
-
-            // Restore Player state
-            if (state.last_player_state && window.player) {
-                window.player.restoreState(state.last_player_state);
-            }
-
-            // Restore active Tab
-            if (state.last_tab) {
-                this.switchTab(state.last_tab, false);
-            } else {
-                this.switchTab('playlists', false);
-            }
-        } catch (err) {
-            console.debug("Error loading user state:", err);
-            this.switchTab('playlists', false);
+            console.debug("Error syncing user state to server:", err);
         }
     }
 
     startAutoStateSave() {
-        window.addEventListener('beforeunload', () => this.saveUserState());
+        window.addEventListener('beforeunload', () => this.saveUserState(true));
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') {
+                this.saveUserState(true);
+            }
+        });
         setInterval(() => this.saveUserState(), 10000);
     }
 
