@@ -34,12 +34,12 @@ body {
     radial-gradient(at 100% 100%, rgba(236, 72, 153, 0.1) 0px, transparent 50%),
     radial-gradient(at 50% 50%, rgba(139, 92, 246, 0.08) 0px, transparent 50%);
   background-attachment: fixed;
-  padding-bottom: 145px; /* Space for mobile bottom player */
+  padding-bottom: 98px; /* Space for compact mobile bottom player */
 }
 
 @media (min-width: 768px) {
   body {
-    padding-bottom: 110px; /* Space for desktop bottom player */
+    padding-bottom: 72px; /* Space for compact desktop bottom player */
   }
 }
 
@@ -167,8 +167,8 @@ input[type="range"].range-slider {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
-  height: 5px;
-  border-radius: 3px;
+  height: 4px;
+  border-radius: 2px;
   background: rgba(255, 255, 255, 0.15);
   outline: none;
   cursor: pointer;
@@ -178,11 +178,11 @@ input[type="range"].range-slider {
 input[type="range"].range-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: #ffffff;
-  box-shadow: 0 0 10px rgba(139, 92, 246, 0.8);
+  box-shadow: 0 0 8px rgba(139, 92, 246, 0.8);
   cursor: pointer;
   transition: all 0.15s ease;
 }
@@ -204,12 +204,12 @@ input[type="range"].range-slider::-webkit-slider-thumb:hover {
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid var(--border-glass);
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
-  padding: 0.5rem 0.75rem;
+  padding: 0.35rem 0.65rem;
 }
 
 @media (min-width: 768px) {
   .bottom-player {
-    padding: 0.6rem 1.5rem;
+    padding: 0.4rem 1.25rem;
   }
 }
 
