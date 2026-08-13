@@ -1006,7 +1006,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.5",
+            version: "1.4.6",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {

@@ -151,8 +151,8 @@ def get_library_files(force_refresh: bool = False) -> List[Dict[str, Any]]:
                     filename = meta["filename"]
                     owner_info = owners.get(filename, {})
                     user_owner = owner_info.get("downloaded_by")
-                    if not user_owner or user_owner in ["Comunidad", "invitado"]:
-                        user_owner = "admin"
+                    if not user_owner or user_owner in ["Comunidad", "invitado", "admin"]:
+                        user_owner = "sherlockes"
                     meta["downloaded_by"] = user_owner
                     files.append(meta)
                 except Exception as e:
