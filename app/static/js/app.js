@@ -1273,12 +1273,39 @@ class MusicApp {
     // PLAYLISTS MANAGEMENT
     // ==========================================
 
+    getLocalPlaylists() {
+        try {
+            const raw = localStorage.getItem(`music_app_playlists_${this.currentUser || 'invitado'}`);
+            if (!raw) return null;
+            return JSON.parse(raw);
+        } catch (e) {
+            return null;
+        }
+    }
+
+    setLocalPlaylists(playlists) {
+        try {
+            localStorage.setItem(`music_app_playlists_${this.currentUser || 'invitado'}`, JSON.stringify(playlists));
+        } catch (e) {}
+    }
+
     async loadPlaylists() {
+        // 1. Instantly render cached playlists if available
+        if (!this.playlists || this.playlists.length === 0) {
+            const cached = this.getLocalPlaylists();
+            if (cached && Array.isArray(cached) && cached.length > 0) {
+                this.playlists = cached;
+                this.renderPlaylistsGrid();
+            }
+        }
+
+        // 2. Fetch fresh playlists from server
         try {
             const res = await this.customFetch('/api/playlists');
             if (!res.ok) return;
             const data = await res.json();
             this.playlists = data.playlists || [];
+            this.setLocalPlaylists(this.playlists);
             this.renderPlaylistsGrid();
         } catch (err) {
             console.error("Failed to load playlists:", err);

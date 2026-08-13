@@ -411,20 +411,38 @@ class AudioPlayer {
         this.loadTrack(prevIdx, true);
     }
 
+    updateShuffleBtn() {
+        if (!this.elShuffleBtn) return;
+        if (this.isShuffle) {
+            this.elShuffleBtn.classList.remove('text-gray-400');
+            this.elShuffleBtn.classList.add('text-purple-400', 'font-bold');
+        } else {
+            this.elShuffleBtn.classList.remove('text-purple-400', 'font-bold');
+            this.elShuffleBtn.classList.add('text-gray-400');
+        }
+    }
+
+    updateRepeatBtn() {
+        if (!this.elRepeatBtn) return;
+        if (this.isRepeat) {
+            this.elRepeatBtn.classList.remove('text-gray-400');
+            this.elRepeatBtn.classList.add('text-purple-400', 'font-bold');
+        } else {
+            this.elRepeatBtn.classList.remove('text-purple-400', 'font-bold');
+            this.elRepeatBtn.classList.add('text-gray-400');
+        }
+    }
+
     toggleShuffle() {
         this.isShuffle = !this.isShuffle;
-        if (this.elShuffleBtn) {
-            this.elShuffleBtn.classList.toggle('text-purple-400', this.isShuffle);
-            this.elShuffleBtn.classList.toggle('text-gray-400', !this.isShuffle);
-        }
+        this.updateShuffleBtn();
+        this.triggerSaveUserState();
     }
 
     toggleRepeat() {
         this.isRepeat = !this.isRepeat;
-        if (this.elRepeatBtn) {
-            this.elRepeatBtn.classList.toggle('text-purple-400', this.isRepeat);
-            this.elRepeatBtn.classList.toggle('text-gray-400', !this.isRepeat);
-        }
+        this.updateRepeatBtn();
+        this.triggerSaveUserState();
     }
 
     onTrackEnded() {
@@ -637,12 +655,22 @@ class AudioPlayer {
             currentIndex: this.currentIndex,
             currentTime: this.audio ? (this.audio.currentTime || 0) : 0,
             volume: this.audio ? this.audio.volume : 1,
-            isPlaying: false
+            isPlaying: false,
+            isShuffle: !!this.isShuffle,
+            isRepeat: !!this.isRepeat
         };
     }
 
     restoreState(state) {
         if (!state) return;
+        if (typeof state.isShuffle === 'boolean') {
+            this.isShuffle = state.isShuffle;
+            this.updateShuffleBtn();
+        }
+        if (typeof state.isRepeat === 'boolean') {
+            this.isRepeat = state.isRepeat;
+            this.updateRepeatBtn();
+        }
         if (state.playlist && Array.isArray(state.playlist) && state.playlist.length > 0) {
             this.playlist = state.playlist;
             const idx = (typeof state.currentIndex === 'number' && state.currentIndex >= 0 && state.currentIndex < state.playlist.length) ? state.currentIndex : 0;
