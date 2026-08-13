@@ -1,0 +1,16 @@
+{
+  "invitado": {
+    "last_tab": "search",
+    "last_player_state": {
+      "playlist": [],
+      "currentIndex": -1,
+      "currentTime": 0,
+      "volume": 1,
+      "isPlaying": false
+    },
+    "last_search_query": "",
+    "last_search_results": [],
+    "last_trending_region": "los40",
+    "last_trending_results": []
+  }
+}

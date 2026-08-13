@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Music App - YouTube Downloader & Cloud Player</title>
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.3.10">
+    <link rel="alternate icon" href="/favicon.ico?v=1.3.10">
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        dark: '#090d16',
+                        glass: 'rgba(20, 27, 45, 0.7)',
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- PWA Manifest & Meta -->
+    <link rel="manifest" href="/manifest.json?v=1.3.10">
+    <meta name="theme-color" content="#0b0f19">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MusicApp">
+    <link rel="apple-touch-icon" href="/static/icon-192.png?v=1.3.10">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/css/style.css?v=1.3.10">
+</head>
+<body class="bg-dark text-slate-100 min-h-screen">
+
+    <!-- FULLSCREEN APP STARTUP LOADING OVERLAY -->
+    <div id="app-startup-overlay" class="fixed inset-0 z-50 bg-slate-950/95 backdrop-blur-2xl flex flex-col items-center justify-center p-6 transition-opacity duration-500">
+        <div class="glass-card p-8 sm:p-10 max-w-sm w-full text-center space-y-6 border border-white/10 shadow-2xl relative overflow-hidden">
+            <!-- Pulsing Ambient Glow -->
+            <div class="absolute -top-12 -left-12 w-32 h-32 bg-blue-500/20 rounded-full blur-2xl"></div>
+            <div class="absolute -bottom-12 -right-12 w-32 h-32 bg-purple-500/20 rounded-full blur-2xl"></div>
+
+            <!-- Logo with Spinner -->
+            <div class="relative w-20 h-20 mx-auto flex items-center justify-center">
+                <div class="absolute inset-0 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-500 animate-pulse opacity-80 blur-sm"></div>
+                <div class="relative w-16 h-16 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center shadow-xl border border-white/20">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                    </svg>
+                </div>
+            </div>
+
+            <!-- Title & Status Message -->
+            <div class="space-y-2">
+                <h3 class="text-xl font-bold text-white tracking-wide">Music Cloud</h3>
+                <div class="flex items-center justify-center gap-2 text-xs text-purple-300 font-mono">
+                    <svg class="animate-spin h-3.5 w-3.5 text-purple-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span id="startup-status-text">Iniciando aplicación...</span>
+                </div>
+            </div>
+
+            <!-- Progress Bar Indicator -->
+            <div class="w-full bg-slate-900 rounded-full h-1.5 overflow-hidden border border-white/5">
+                <div id="startup-progress-bar" class="h-full bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-500 transition-all duration-300" style="width: 15%"></div>
+            </div>
+            
+            <p class="text-[11px] text-slate-500 font-mono">Conectando con el servidor VPS y verificando almacenamiento...</p>
+        </div>
+    </div>
+
+    <!-- TOP HEADER NAVBAR -->
+    <header class="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-xl border-b border-white/10 px-4 lg:px-8 py-3">
+        <div class="max-w-7xl mx-auto flex items-center justify-between gap-2">
+            
+            <!-- Brand Logo (Left) -->
+            <div class="flex items-center gap-2.5">
+                <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-purple-600 to-indigo-500 flex items-center justify-center shadow-lg shadow-purple-500/30 flex-shrink-0">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="font-bold text-base sm:text-lg leading-none gradient-text">Music Cloud</h1>
+                    <p class="text-[10px] text-purple-300/80 font-mono mt-0.5 sm:hidden">v1.3.10</p>
+                    <p class="text-[10px] text-slate-400 font-mono hidden sm:block mt-0.5">music-app &bull; v1.3.10</p>
+                </div>
+            </div>
+
+            <!-- User Badge (Click to re-authenticate / switch NPM user) -->
+            <button onclick="window.app.logoutAndSwitchUser()" title="Haz clic para cambiar de usuario en NPM"
+                    class="flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-900/90 hover:bg-purple-950/80 border border-purple-500/30 hover:border-purple-400/60 text-xs text-purple-200 shadow-md transition group cursor-pointer">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400 group-hover:scale-110 transition flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                </svg>
+                <span id="user-badge-name" class="font-semibold truncate max-w-[110px] sm:max-w-none">Cargando...</span>
+            </button>
+
+            <!-- Desktop Navigation Tabs (Hidden on mobile) -->
+            <nav class="hidden md:flex items-center gap-1 sm:gap-2 bg-slate-900/80 p-1.5 rounded-full border border-white/10">
+                <button data-tab="search" class="nav-tab">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <span>Buscador</span>
+                </button>
+
+                <button data-tab="trending" class="nav-tab">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>
+                    </svg>
+                    <span>Tendencias</span>
+                </button>
+
+                <button data-tab="library" class="nav-tab">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                    </svg>
+                    <span>Biblioteca</span>
+                </button>
+
+                <button data-tab="playlists" class="nav-tab active">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                    </svg>
+                    <span>Listas</span>
+                </button>
+
+                <button data-tab="downloads" class="nav-tab relative">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    <span>Descargas</span>
+                    <span class="downloads-active-badge hidden absolute -top-1 -right-1 bg-pink-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-bounce">0</span>
+                </button>
+
+                <button data-tab="rclone" class="nav-tab">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+                    </svg>
+                    <span>Rclone Nube</span>
+                </button>
+
+                <button data-tab="storage" class="nav-tab">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                        <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                        <line x1="12" y1="22.08" x2="12" y2="12"/>
+                    </svg>
+                    <span>Almacenamiento</span>
+                </button>
+            </nav>
+
+            <!-- Mobile Hamburger Button (Right) -->
+            <button id="mobile-menu-btn" onclick="window.app.toggleMobileMenu()" class="md:hidden p-2 rounded-xl bg-slate-900/90 border border-white/10 text-slate-200 hover:text-white focus:outline-none relative">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/>
+                </svg>
+                <span class="downloads-active-badge hidden absolute -top-1 -right-1 bg-pink-500 text-white text-[10px] font-bold w-4 h-4 rounded-full flex items-center justify-center animate-bounce">0</span>
+            </button>
+
+        </div>
+
+        <!-- Mobile Dropdown Menu Drawer -->
+        <div id="mobile-menu-dropdown" class="hidden md:hidden mt-3 p-2 bg-slate-900/95 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-2xl space-y-1 transition duration-200">
+            <button data-tab="search" onclick="window.app.selectMobileTab('search')" class="mobile-nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-200 hover:bg-purple-950/60 hover:text-purple-300 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <span>Buscador</span>
+            </button>
+
+            <button data-tab="trending" onclick="window.app.selectMobileTab('trending')" class="mobile-nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-200 hover:bg-purple-950/60 hover:text-purple-300 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-orange-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>
+                </svg>
+                <span>Tendencias</span>
+            </button>
+
+            <button data-tab="library" onclick="window.app.selectMobileTab('library')" class="mobile-nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-200 hover:bg-purple-950/60 hover:text-purple-300 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                </svg>
+                <span>Biblioteca</span>
+            </button>
+
+            <button data-tab="playlists" onclick="window.app.selectMobileTab('playlists')" class="mobile-nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-200 hover:bg-purple-950/60 hover:text-purple-300 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                </svg>
+                <span>Listas</span>
+            </button>
+
+            <button data-tab="downloads" onclick="window.app.selectMobileTab('downloads')" class="mobile-nav-item w-full flex items-center justify-between px-4 py-3 rounded-xl text-sm font-medium text-slate-200 hover:bg-purple-950/60 hover:text-purple-300 transition">
+                <div class="flex items-center gap-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    <span>Descargas</span>
+                </div>
+                <span class="downloads-active-badge hidden bg-pink-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">0</span>
+            </button>
+
+            <button data-tab="storage" onclick="window.app.selectMobileTab('storage')" class="mobile-nav-item w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-slate-200 hover:bg-purple-950/60 hover:text-purple-300 transition">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 16V8a2 2 0 0 1-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+                    <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+                <span>Almacenamiento</span>
+            </button>
+        </div>
+    </header>
+
+    <!-- MAIN CONTENT AREA -->
+    <main class="max-w-7xl mx-auto px-4 lg:px-8 pt-2 pb-8 md:py-8">
+
+        <!-- TAB 1: YOUTUBE SEARCH -->
+        <section id="view-search" class="tab-view hidden space-y-3 md:space-y-6">
+            <!-- Search Bar Hero (Direct search bar on mobile, glass card on desktop) -->
+            <div class="md:glass-card p-0 md:p-8 space-y-3 md:space-y-4 text-center max-w-3xl mx-auto">
+                <h2 class="hidden md:block text-2xl md:text-3xl font-bold">Busca y descarga audio de YouTube</h2>
+                <p class="hidden md:block text-sm text-slate-400">Los archivos se convertirán automáticamente a MP3 máxima calidad y se guardarán en tu almacenamiento Rclone.</p>
+                
+                <div class="relative flex items-center">
+                    <input type="text" id="search-input" placeholder="Artista, canción o enlace de YouTube..." 
+                           class="w-full bg-slate-900/90 border border-white/10 rounded-2xl py-3 pl-4 pr-24 sm:py-3.5 sm:pl-5 sm:pr-32 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500 transition shadow-lg">
+                    <button id="search-btn" class="absolute right-1.5 sm:right-2 btn-primary text-xs py-1.5 px-3 sm:py-2 sm:px-4 rounded-xl">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        <span>Buscar</span>
+                    </button>
+                </div>
+
+                <!-- Quick suggestion tags (Hidden on mobile) -->
+                <div class="hidden md:flex flex-wrap justify-center gap-2 pt-2 text-xs">
+                    <span class="text-slate-500 font-medium">Sugerencias:</span>
+                    <button onclick="document.getElementById('search-input').value='Lo-fi Beats'; window.app.performSearch('Lo-fi Beats')" class="px-2.5 py-1 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition">Lo-fi Beats</button>
+                    <button onclick="document.getElementById('search-input').value='Rock 80s'; window.app.performSearch('Rock 80s')" class="px-2.5 py-1 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition">Rock 80s</button>
+                    <button onclick="document.getElementById('search-input').value='Chillout Acoustic'; window.app.performSearch('Chillout Acoustic')" class="px-2.5 py-1 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 transition">Chillout Acoustic</button>
+                </div>
+            </div>
+
+            <!-- Search Header Bar with Reproducir Lista -->
+            <div class="glass-card p-2.5 sm:p-4 flex items-center justify-between gap-1.5 sm:gap-3">
+                <div class="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
+                    <div class="h-9 w-9 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 text-white shadow-lg flex-shrink-0 flex items-center justify-center" title="Búsqueda">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                    </div>
+
+                    <!-- Reproducir Lista Completa Button -->
+                    <button id="search-play-all-btn"
+                            disabled
+                            onclick="window.app.playAllSearch()"
+                            class="h-9 w-9 sm:w-auto sm:px-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs rounded-xl flex items-center justify-center gap-1.5 font-semibold shadow-md transition transform active:scale-95 flex-shrink-0 opacity-40 cursor-not-allowed"
+                            title="Reproducir todas las canciones encontradas">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 fill-current text-white flex-shrink-0" viewBox="0 0 24 24">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                        <span class="hidden sm:inline">Reproducir Lista</span>
+                    </button>
+
+                    <div class="min-w-0">
+                        <h2 class="text-base sm:text-lg font-bold text-white truncate">Resultados de Búsqueda</h2>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Search Results Cards Container -->
+            <div id="search-results" class="space-y-3">
+                <!-- Dynamic cards populated by app.js -->
+                <div class="glass-card p-12 text-center text-slate-400">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-12 h-12 mx-auto text-slate-600 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <p class="text-base font-medium">Ingresa un término para comenzar a buscar.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 1.5: TRENDING (TENDENCIAS) -->
+        <section id="view-trending" class="tab-view hidden space-y-4 md:space-y-6">
+            <div class="glass-card p-2.5 sm:p-4 flex items-center justify-between gap-1.5 sm:gap-3">
+                <div class="flex items-center gap-1.5 sm:gap-2.5 min-w-0">
+                    <div class="h-9 w-9 rounded-xl bg-gradient-to-br from-orange-500 to-amber-600 text-white shadow-lg flex-shrink-0 flex items-center justify-center" title="Tendencias">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>
+                        </svg>
+                    </div>
+
+                    <!-- Reproducir Lista Completa Button (Disabled by default, icon-only on mobile) -->
+                    <button id="trending-play-all-btn"
+                            disabled
+                            onclick="window.app.playAllTrending()"
+                            class="h-9 w-9 sm:w-auto sm:px-3.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-xs rounded-xl flex items-center justify-center gap-1.5 font-semibold shadow-md transition transform active:scale-95 flex-shrink-0 opacity-40 cursor-not-allowed"
+                            title="Reproducir todas las canciones encontradas">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 fill-current text-white flex-shrink-0" viewBox="0 0 24 24">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                        <span class="hidden sm:inline">Reproducir Lista</span>
+                    </button>
+
+                    <!-- Actualizar Button (Right next to Play button) -->
+                    <button onclick="window.app.loadTrending(true)" class="h-9 w-9 sm:w-auto sm:px-3 btn-secondary text-xs flex items-center justify-center gap-1.5 flex-shrink-0" title="Actualizar tendencias">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+                            <path d="M21 3v5h-5"/>
+                            <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+                            <path d="M3 21v-5h5"/>
+                        </svg>
+                        <span class="hidden sm:inline">Actualizar</span>
+                    </button>
+
+                    <div class="hidden lg:block min-w-0">
+                        <h2 class="text-base sm:text-lg font-bold text-white truncate">Éxitos en Tendencia</h2>
+                    </div>
+                </div>
+
+                <!-- Region Filter Select (Far Right) -->
+                <div class="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+                    <select id="trending-region-select" onchange="window.app.setTrendingRegion(this.value)"
+                            class="h-9 bg-slate-950 border border-white/10 rounded-xl px-2 sm:px-3 text-xs text-orange-300 focus:outline-none focus:border-orange-500 font-semibold cursor-pointer flex-shrink-0">
+                        <option value="los40" selected>📻 LOS40 España</option>
+                        <option value="es">🇪🇸 España</option>
+                        <option value="global">🌍 Internacional</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Trending Cards Container -->
+            <div id="trending-tracks" class="space-y-3">
+                <!-- Dynamic single-row cards populated by app.js -->
+            </div>
+        </section>
+
+        <!-- TAB 2: LIBRARY -->
+        <section id="view-library" class="tab-view hidden space-y-6">
+            <!-- Header bar for Library -->
+            <div class="glass-card p-3 sm:p-4 space-y-3 sm:space-y-0 sm:flex sm:items-center sm:justify-between">
+                <!-- Row 1: Title & Count (Left) + Refresh Icon Button (Right) -->
+                <div class="flex items-center justify-between gap-3">
+                    <div class="flex items-center gap-2 sm:gap-3">
+                        <h2 class="text-lg sm:text-xl font-bold text-white">Biblioteca</h2>
+                        <span id="library-track-count" class="text-[10px] sm:text-xs px-2 py-0.5 rounded-full bg-purple-950/80 text-purple-300 border border-purple-800/40 font-mono whitespace-nowrap">0 temas y 0% ocupado</span>
+                    </div>
+
+                    <!-- Library Actions: Export, Import, Refresh -->
+                    <div class="flex items-center gap-1.5 sm:gap-2">
+                        <!-- Exportar Button -->
+                        <button onclick="window.app.exportLibrary()" class="btn-secondary p-2 sm:py-1.5 sm:px-3 text-xs flex items-center gap-1.5 bg-slate-900/80 hover:bg-slate-800 text-slate-200 border border-slate-700/60 rounded-xl transition shadow" title="Exportar la lista de canciones de la biblioteca a un archivo JSON">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                            <span class="hidden sm:inline font-medium">Exportar</span>
+                        </button>
+
+                        <!-- Importar Button -->
+                        <button onclick="window.app.triggerImportLibrary()" class="btn-secondary p-2 sm:py-1.5 sm:px-3 text-xs flex items-center gap-1.5 bg-slate-900/80 hover:bg-slate-800 text-slate-200 border border-slate-700/60 rounded-xl transition shadow" title="Importar canciones desde un archivo JSON exportado previamente">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/>
+                                <line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            <span class="hidden sm:inline font-medium">Importar</span>
+                        </button>
+
+                        <!-- Hidden file input for import -->
+                        <input type="file" id="library-import-file" accept=".json" class="hidden" onchange="window.app.importLibrary(event)">
+
+                        <!-- Refresh Button -->
+                        <button onclick="window.app.loadLibrary()" class="btn-secondary p-2 sm:py-1.5 sm:px-3 text-xs flex items-center gap-1.5" title="Actualizar biblioteca">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/>
+                            </svg>
+                            <span class="hidden sm:inline">Actualizar</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Row 2 (Mobile second row): User Filter & Library Search -->
+                <div class="flex flex-col sm:flex-row items-center gap-2.5 w-full sm:w-auto pt-2 sm:pt-0 border-t border-white/5 sm:border-t-0">
+                    <!-- User Filter Select -->
+                    <select id="library-user-filter" onchange="window.app.filterLibraryByUser(this.value)"
+                            class="w-full sm:w-auto bg-slate-950 border border-white/10 rounded-xl py-2 px-3 text-xs text-purple-300 focus:outline-none focus:border-purple-500">
+                        <option value="all">Todas las canciones</option>
+                        <option value="my">Mis descargas</option>
+                    </select>
+
+                    <!-- Library search input -->
+                    <div class="relative w-full sm:w-64">
+                        <input type="text" placeholder="Filtrar en la biblioteca..." oninput="window.app.filterLibrary(this.value)"
+                               class="w-full bg-slate-950/80 border border-white/10 rounded-xl py-2 pl-8 pr-3 text-xs text-white focus:outline-none focus:border-purple-500">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Track Cards List -->
+            <div id="library-tracks" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <!-- Tracks dynamically populated by app.js -->
+            </div>
+        </section>
+
+        <!-- TAB 3: PLAYLISTS (LISTAS DE REPRODUCCIÓN) -->
+        <section id="view-playlists" class="tab-view space-y-6">
+            <div class="sm:glass-card p-0 sm:p-4 flex items-center justify-between gap-4">
+                <div>
+                    <h2 class="text-xl font-bold text-white">
+                        <span class="sm:hidden">Listas</span>
+                        <span class="hidden sm:inline">Listas de Reproducción</span>
+                    </h2>
+                    <p class="hidden sm:block text-xs text-slate-400 mt-0.5">Explora y crea listas compartidas entre usuarios</p>
+                </div>
+                <div class="flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+                    <!-- Exportar Listas Button -->
+                    <button onclick="window.app.exportPlaylists()" class="btn-secondary p-2 sm:py-1.5 sm:px-3 text-xs flex items-center gap-1.5 bg-slate-900/80 hover:bg-slate-800 text-slate-200 border border-slate-700/60 rounded-xl transition shadow" title="Exportar todas las listas de reproducción a un archivo JSON">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="17 8 12 3 7 8"/>
+                            <line x1="12" y1="3" x2="12" y2="15"/>
+                        </svg>
+                        <span class="hidden sm:inline font-medium">Exportar</span>
+                    </button>
+
+                    <!-- Importar Listas Button -->
+                    <button onclick="window.app.triggerImportPlaylists()" class="btn-secondary p-2 sm:py-1.5 sm:px-3 text-xs flex items-center gap-1.5 bg-slate-900/80 hover:bg-slate-800 text-slate-200 border border-slate-700/60 rounded-xl transition shadow" title="Importar listas desde un archivo JSON exportado">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                            <polyline points="7 10 12 15 17 10"/>
+                            <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        <span class="hidden sm:inline font-medium">Importar</span>
+                    </button>
+
+                    <!-- Hidden file input for playlist import -->
+                    <input type="file" id="playlists-import-file" accept=".json" class="hidden" onchange="window.app.importPlaylists(event)">
+
+                    <!-- Nueva Lista Button -->
+                    <button onclick="window.app.openCreatePlaylistModal()" class="btn-primary text-xs py-2 px-3 sm:px-4 flex items-center gap-1.5 font-semibold shadow-lg">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                        <span>Nueva Lista</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Playlists Grid Container -->
+            <div id="playlists-grid" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- Populated by app.js -->
+            </div>
+        </section>
+
+        <!-- TAB 3: DOWNLOADS QUEUE -->
+        <section id="view-downloads" class="tab-view hidden space-y-6">
+            <div class="glass-card p-4 flex items-center justify-between">
+                <div>
+                    <h2 class="text-xl font-bold text-white">Cola de Descargas</h2>
+                    <p class="text-xs text-slate-400 mt-0.5">Estado en tiempo real del procesamiento de yt-dlp</p>
+                </div>
+            </div>
+
+            <div id="downloads-list" class="space-y-3">
+                <!-- Populated by app.js -->
+            </div>
+        </section>
+
+        <!-- TAB 4: RCLONE CLOUD CONFIG -->
+        <section id="view-rclone" class="tab-view hidden space-y-6">
+            <!-- Storage Overview Card -->
+            <div class="glass-card p-6 space-y-4">
+                <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+                    <div>
+                        <h2 class="text-xl font-bold text-white">Almacenamiento en la Nube (Rclone)</h2>
+                        <p class="text-xs text-slate-400 font-mono mt-0.5">Punto de montaje: <span id="rclone-mount-path" class="text-purple-300">/mnt/cloud_music</span></p>
+                    </div>
+                    <div id="rclone-status-badge">
+                        <!-- Mount status badge -->
+                    </div>
+                </div>
+
+                <!-- Disk Space Progress -->
+                <div class="space-y-2">
+                    <div class="flex justify-between text-xs font-semibold">
+                        <span class="text-slate-300">Uso de almacenamiento: <span id="rclone-storage-used">0 GB</span> / <span id="rclone-storage-total">0 GB</span></span>
+                        <span id="rclone-storage-percent" class="text-purple-400 font-mono">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-900 rounded-full h-3 overflow-hidden border border-slate-800">
+                        <div id="rclone-storage-bar" class="bg-gradient-to-r from-purple-500 to-pink-500 h-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                    <p class="text-[11px] text-slate-500">Espacio disponible: <span id="rclone-storage-free" class="text-slate-300 font-mono">0 GB</span></p>
+                </div>
+
+                <!-- Remote Selection Form -->
+                <div class="pt-4 border-t border-white/10 flex flex-col sm:flex-row items-center gap-3">
+                    <label class="text-xs font-semibold text-slate-300 flex-shrink-0">Remoto a montar:</label>
+                    <select id="rclone-remotes-select" class="bg-slate-950 border border-white/10 rounded-xl py-2 px-3 text-xs text-white flex-1 focus:outline-none focus:border-purple-500">
+                        <option value="">Cargando remotos...</option>
+                    </select>
+                    <button onclick="window.rcloneMgr.mountSelectedRemote()" class="btn-primary text-xs py-2 px-4">
+                        Montar Remoto
+                    </button>
+                    <button onclick="window.rcloneMgr.unmountRemote()" class="btn-secondary text-xs py-2 px-4 text-amber-400 hover:text-amber-300">
+                        Desmontar
+                    </button>
+                </div>
+            </div>
+
+            <!-- Direct rclone.conf Text Editor Card -->
+            <div class="glass-card p-6 space-y-4">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <h3 class="text-lg font-bold text-white">Configuración Directa (`rclone.conf`)</h3>
+                        <p class="text-xs text-slate-400 mt-1">Pega o edita directamente tu bloque de configuración de Rclone con el token de acceso.</p>
+                    </div>
+                    <button onclick="window.rcloneMgr.saveConfigText()" class="btn-primary text-xs py-2 px-4 flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>
+                        </svg>
+                        Guardar `rclone.conf`
+                    </button>
+                </div>
+
+                <div class="space-y-2">
+                    <textarea id="rclone-config-textarea" rows="8" placeholder="Pega aquí el contenido de tu rclone.conf (ej: [cloud_music] type = drive...)" 
+                              class="w-full bg-slate-950 font-mono text-xs text-slate-200 border border-white/10 rounded-xl p-4 focus:outline-none focus:border-purple-500 transition leading-relaxed"></textarea>
+                    <p class="text-[11px] text-slate-500">Ejemplo: <code class="text-purple-400 font-mono">[cloud_music]<br>type = drive<br>scope = drive<br>token = {"access_token":"...","refresh_token":"..."}</code></p>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 7: STORAGE & NETWORK DATA SETTINGS -->
+        <section id="view-storage" class="tab-view hidden space-y-6 max-w-4xl mx-auto">
+            
+            <div class="flex items-center justify-between">
+                <div>
+                    <h2 class="text-xl sm:text-2xl font-bold flex items-center gap-2">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                        </svg>
+                        Almacenamiento
+                    </h2>
+                    <p class="text-xs sm:text-sm text-slate-400 mt-1">Gobernanza de almacenamiento local, límites de la nube y consumo de red.</p>
+                </div>
+            </div>
+
+            <!-- CARD 1: DISPOSITIVO LOCAL & CACHÉ OFFLINE -->
+            <div class="glass-card p-4 sm:p-6 space-y-4">
+                <div class="flex items-center justify-between border-b border-white/10 pb-3">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2.5 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-sm sm:text-base">Caché Offline en Dispositivo (PWA)</h3>
+                            <p class="text-xs text-slate-400">Guarda canciones en la memoria del móvil para reproducir sin conexión ni datos.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Local Storage Meter Bar -->
+                <div class="space-y-1.5">
+                    <div class="flex justify-between items-center text-xs font-mono">
+                        <span class="text-slate-300">Caché: <strong id="local-storage-used-str" class="text-purple-300">Calculando...</strong> / <span id="local-storage-limit-str" class="text-slate-400">1 GB</span></span>
+                    </div>
+                    <div class="w-full h-2.5 rounded-full bg-slate-900 overflow-hidden border border-white/5">
+                        <div id="local-storage-progress-bar" class="h-full bg-gradient-to-r from-purple-600 to-indigo-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- Section: Limpieza de caché -->
+                <div class="space-y-2 pt-1">
+                    <h4 class="text-xs font-bold text-slate-200">Limpieza de caché</h4>
+
+                    <!-- Both Dropdowns on the Same Line -->
+                    <div class="grid grid-cols-2 gap-2.5 sm:gap-4">
+                        <!-- Option 1: Days -->
+                        <div>
+                            <select id="local-ttl-select" onchange="window.app.updateLocalStorageSettings()" 
+                                    class="w-full bg-slate-900 border border-white/10 rounded-xl px-2.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500 truncate">
+                                <option value="30" selected>30 días</option>
+                                <option value="60">60 días</option>
+                                <option value="90">90 días</option>
+                                <option value="0">Ilimitado</option>
+                            </select>
+                        </div>
+
+                        <!-- Option 2: Space limit -->
+                        <div>
+                            <select id="local-limit-select" onchange="window.app.updateLocalStorageSettings()" 
+                                    class="w-full bg-slate-900 border border-white/10 rounded-xl px-2.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-purple-500 truncate">
+                                <option value="1073741824" selected>1 giga</option>
+                                <option value="2147483648">2 gigas</option>
+                                <option value="5368709120">5 gigas</option>
+                                <option value="0">Sin límite</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Underneath Line: Vaciar caché button + items count centered in remaining space -->
+                    <div class="flex items-center pt-2">
+                        <button onclick="window.app.clearLocalOfflineCache()" class="btn-secondary text-xs py-2 px-3.5 flex items-center gap-1.5 text-red-300 hover:text-red-200 border-red-500/20 hover:bg-red-500/10 flex-shrink-0">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            </svg>
+                            <span>Vaciar caché</span>
+                        </button>
+                        <div class="flex-1 text-center">
+                            <span id="local-cache-track-count" class="text-xs text-slate-400 font-mono">0 items</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CARD 2: CONSUMO DE DATOS MENSUAL -->
+            <div class="glass-card p-4 sm:p-6 space-y-4">
+                <div class="flex items-center justify-between border-b border-white/10 pb-3">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2.5 rounded-xl bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-sm sm:text-base">Consumo datos mensual</h3>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Wi-Fi and Mobile Data on the Same Line -->
+                <div class="grid grid-cols-2 gap-2.5 sm:gap-4">
+                    <!-- Wifi Usage -->
+                    <div class="p-3 sm:p-4 rounded-xl bg-slate-900/90 border border-white/5 space-y-1">
+                        <div class="flex items-center text-xs text-slate-400 gap-1.5">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-emerald-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><line x1="12" y1="20" x2="12.01" y2="20"/>
+                            </svg>
+                            <span class="truncate">Red Wi-Fi</span>
+                        </div>
+                        <p id="data-usage-wifi-str" class="text-lg sm:text-xl font-bold font-mono text-slate-100">0.0 MB</p>
+                    </div>
+
+                    <!-- Mobile Data Usage -->
+                    <div class="p-3 sm:p-4 rounded-xl bg-slate-900/90 border border-white/5 space-y-1">
+                        <div class="flex items-center text-xs text-slate-400 gap-1.5">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-amber-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/>
+                            </svg>
+                            <span class="truncate">Red Móvil</span>
+                        </div>
+                        <p id="data-usage-mobile-str" class="text-lg sm:text-xl font-bold font-mono text-amber-300">0.0 MB</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CARD 3: LÍMITE DE ESPACIO EN LA NUBE (SERVIDOR / RCLONE) -->
+            <div class="glass-card p-5 sm:p-6 space-y-4">
+                <div class="flex items-center justify-between border-b border-white/10 pb-3">
+                    <div class="flex items-center gap-3">
+                        <div class="p-2.5 rounded-xl bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>
+                            </svg>
+                        </div>
+                        <div>
+                            <h3 class="font-bold text-sm sm:text-base">Límite de Almacenamiento en la Nube</h3>
+                            <p class="text-xs text-slate-400">Control de espacio en el servidor (Rclone / Google Drive) con eliminación LRU.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cloud Storage Meter Bar -->
+                <div class="space-y-1.5">
+                    <div class="flex justify-between text-xs font-mono">
+                        <span class="text-slate-300">Ocupado en Nube: <strong id="cloud-storage-used-str" class="text-indigo-300">Cargando...</strong></span>
+                        <span id="cloud-storage-limit-str" class="text-slate-400">Límite: Sin Límite</span>
+                    </div>
+                    <div class="w-full h-2.5 rounded-full bg-slate-900 overflow-hidden border border-white/5">
+                        <div id="cloud-storage-progress-bar" class="h-full bg-gradient-to-r from-indigo-500 to-blue-500 transition-all duration-300" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-300 mb-1.5">Límite Máximo en la Nube:</label>
+                        <select id="cloud-limit-select" onchange="window.app.updateCloudStorageLimit()" 
+                                class="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500">
+                            <option value="0" selected>Sin límite de espacio</option>
+                            <option value="1073741824">1 GB</option>
+                            <option value="5368709120">5 GB</option>
+                            <option value="10737418240">10 GB</option>
+                            <option value="21474836480">20 GB</option>
+                            <option value="53687091200">50 GB</option>
+                        </select>
+                    </div>
+
+                    <div class="flex items-end">
+                        <button onclick="window.app.cleanCloudStorageNow()" class="w-full btn-secondary text-xs py-2 px-3 flex items-center justify-center gap-1.5">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+                            </svg>
+                            Verificar & Limpiar Nube Ahora
+                        </button>
+                    </div>
+                </div>
+
+                <div class="p-3 rounded-xl bg-purple-950/30 border border-purple-800/30 text-[11px] text-purple-200 leading-relaxed">
+                    💡 <strong>Política de Purga LRU en Nube:</strong> Cuando el almacenamiento en la nube supere el límite fijado, el servidor eliminará automáticamente las canciones que <em>hace más tiempo que ningún usuario escucha</em> hasta liberar espacio suficiente.
+                </div>
+            </div>
+
+        </section>
+
+    </main>
+
+    <!-- FLOATING BOTTOM AUDIO PLAYER -->
+    <div id="bottom-player" class="bottom-player hidden">
+        <div class="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-2 md:gap-4">
+            
+            <!-- Row 1 (Mobile) / Left Column (Desktop): Cover, Title, Artist, & Mobile Aux Controls -->
+            <div class="flex items-center justify-between w-full md:w-1/4 md:min-w-[180px] gap-2">
+                <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                    <img id="player-cover" src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='60' height='60' viewBox='0 0 24 24' fill='none' stroke='%238b5cf6' stroke-width='1.5'><rect width='18' height='18' x='3' y='3' rx='2' fill='%231e1b4b'/><circle cx='12' cy='12' r='4'/><polygon points='10 10 15 12 10 14 10 10'/></svg>" 
+                         alt="Cover" class="w-9 h-9 md:w-12 md:h-12 rounded-lg object-cover bg-slate-900 border border-white/10 shadow-md flex-shrink-0">
+                    
+                    <!-- Title & Artist in ONE row on mobile, stacked on desktop -->
+                    <div class="min-w-0 flex-1 flex flex-row md:flex-col items-center md:items-start gap-1 md:gap-0">
+                        <h4 id="player-title" class="font-semibold text-xs text-white truncate max-w-[120px] sm:max-w-none">Ninguna canción</h4>
+                        <span class="text-slate-500 font-bold md:hidden text-xs">•</span>
+                        <p id="player-artist" class="text-xs md:text-[11px] text-slate-400 truncate">Selecciona un tema</p>
+                    </div>
+                </div>
+
+                <!-- Mobile Mute & Queue Buttons (Right side of top row on mobile) -->
+                <div class="flex md:hidden items-center gap-1 flex-shrink-0">
+                    <button onclick="document.getElementById('player-mute-btn').click()" class="p-1.5 text-gray-300 hover:text-white">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                        </svg>
+                    </button>
+                    <button onclick="document.getElementById('player-queue-btn').click()" class="p-1.5 text-gray-400 hover:text-purple-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Row 2 (Mobile) / Center Column (Desktop): Playback Controls & Timeline -->
+            <div class="w-full md:flex-1 md:max-w-xl space-y-1">
+                <!-- Controls Row -->
+                <div class="flex items-center justify-center gap-3 sm:gap-4">
+                    <!-- Shuffle -->
+                    <button id="player-shuffle-btn" class="text-gray-400 hover:text-white transition p-1" title="Modo Aleatorio">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>
+                        </svg>
+                    </button>
+
+                    <!-- Previous -->
+                    <button id="player-prev-btn" class="text-gray-300 hover:text-white transition p-1" title="Anterior">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                            <polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                    </button>
+
+                    <!-- Play / Pause -->
+                    <button id="player-play-btn" class="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-500 text-white flex items-center justify-center shadow-lg shadow-purple-500/40 hover:scale-105 transition flex-shrink-0">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 sm:w-6 sm:h-6 fill-current ml-0.5" viewBox="0 0 24 24">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                    </button>
+
+                    <!-- Next -->
+                    <button id="player-next-btn" class="text-gray-300 hover:text-white transition p-1" title="Siguiente">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                            <polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19" stroke="currentColor" stroke-width="2"/>
+                        </svg>
+                    </button>
+
+                    <!-- Repeat -->
+                    <button id="player-repeat-btn" class="text-gray-400 hover:text-white transition p-1" title="Repetir canción">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- Timeline Slider -->
+                <div class="flex items-center gap-2 sm:gap-3">
+                    <span id="player-curr-time" class="text-[10px] font-mono text-slate-400 w-8 text-right flex-shrink-0">00:00</span>
+                    <input type="range" id="player-seek-slider" min="0" max="100" value="0" class="range-slider flex-1">
+                    <span id="player-duration" class="text-[10px] font-mono text-slate-400 w-8 flex-shrink-0">00:00</span>
+                </div>
+            </div>
+
+            <!-- Right Column (Desktop Only Volume Controls) -->
+            <div class="hidden md:flex items-center justify-end gap-3 w-1/4 min-w-[140px]">
+                <button id="player-mute-btn" class="p-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-gray-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                    </svg>
+                </button>
+                <input type="range" id="player-volume-slider" min="0" max="100" value="80" class="range-slider w-20">
+
+                <button id="player-queue-btn" class="p-2 rounded-lg text-gray-400 hover:text-purple-400 hover:bg-slate-800 transition" title="Cola de reproducción">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- QUEUE FLOATING DRAWER PANEL -->
+    <div id="queue-drawer" class="hidden fixed bottom-24 right-6 w-80 max-h-96 glass-card border border-white/10 shadow-2xl p-4 flex flex-col z-50">
+        <h4 class="font-semibold text-xs text-slate-300 border-b border-white/10 pb-2 mb-2 flex items-center justify-between">
+            <span>Cola de Reproducción</span>
+            <span class="text-[10px] text-purple-400">Pistas disponibles</span>
+        </h4>
+        <div id="queue-list" class="flex-1 overflow-y-auto space-y-1 pr-1">
+            <!-- Queue items populated by player.js -->
+        </div>
+    </div>
+
+    <!-- CREATE PLAYLIST MODAL -->
+    <div id="modal-create-playlist" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="glass-card w-full max-w-md p-6 space-y-4 shadow-2xl border border-white/10">
+            <h3 class="text-lg font-bold text-white">Crear Nueva Lista</h3>
+            <div class="space-y-3">
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Nombre de la Lista</label>
+                    <input type="text" id="playlist-name-input" placeholder="Ej. Mis Favoritas, Fiesta 80s..." 
+                           class="w-full bg-slate-950 border border-white/10 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-purple-500">
+                </div>
+                <div>
+                    <label class="block text-xs font-semibold text-slate-300 mb-1">Descripción (Opcional)</label>
+                    <input type="text" id="playlist-desc-input" placeholder="Breve descripción..." 
+                           class="w-full bg-slate-950 border border-white/10 rounded-xl py-2 px-3 text-xs text-white focus:outline-none focus:border-purple-500">
+                </div>
+            </div>
+            <div class="flex justify-end gap-2 pt-2">
+                <button onclick="document.getElementById('modal-create-playlist').classList.add('hidden')" class="btn-secondary text-xs py-2 px-4">Cancelar</button>
+                <button onclick="window.app.submitCreatePlaylist()" class="btn-primary text-xs py-2 px-4">Crear Lista</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADD TRACK TO PLAYLIST MODAL -->
+    <div id="modal-add-to-playlist" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="glass-card w-full max-w-md p-6 space-y-4 shadow-2xl border border-white/10">
+            <h3 class="text-lg font-bold text-white">Añadir Canción a Lista</h3>
+            <p id="add-to-playlist-track-name" class="text-xs text-purple-300 font-mono truncate"></p>
+            <div id="add-to-playlist-options" class="space-y-2 max-h-60 overflow-y-auto pr-1">
+                <!-- List options populated by app.js -->
+            </div>
+            <div class="flex justify-end pt-2">
+                <button onclick="document.getElementById('modal-add-to-playlist').classList.add('hidden')" class="btn-secondary text-xs py-2 px-4">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- EDIT PLAYLIST MODAL -->
+    <div id="modal-edit-playlist" class="hidden fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+        <div class="glass-card w-full max-w-lg p-5 sm:p-6 space-y-4 shadow-2xl border border-white/10 flex flex-col max-h-[85vh]">
+            <div class="flex items-center justify-between border-b border-white/10 pb-3">
+                <div class="min-w-0 flex-1 pr-2">
+                    <h3 id="edit-playlist-title" class="text-base sm:text-lg font-bold text-white truncate">Lista</h3>
+                </div>
+                <button onclick="document.getElementById('modal-edit-playlist').classList.add('hidden')" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- List of tracks in playlist -->
+            <div id="edit-playlist-tracks-list" class="space-y-1 overflow-y-auto pr-1 flex-1 min-h-[180px] max-h-[360px]">
+                <!-- Dynamic tracks list populated by app.js -->
+            </div>
+
+            <!-- Bottom bar controls -->
+            <div class="flex items-center justify-between pt-3 border-t border-white/10">
+                <!-- Action controls for selected track -->
+                <div class="flex items-center gap-1.5">
+                    <button id="edit-btn-up" onclick="window.app.moveSelectedTrack(-1)" disabled 
+                            class="p-2 rounded-xl bg-slate-900 border border-white/10 text-slate-500 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-purple-600 hover:text-white hover:border-purple-500 transition" 
+                            title="Subir canción seleccionada">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="18 15 12 9 6 15"/>
+                        </svg>
+                    </button>
+
+                    <button id="edit-btn-down" onclick="window.app.moveSelectedTrack(1)" disabled 
+                            class="p-2 rounded-xl bg-slate-900 border border-white/10 text-slate-500 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-purple-600 hover:text-white hover:border-purple-500 transition" 
+                            title="Bajar canción seleccionada">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"/>
+                        </svg>
+                    </button>
+
+                    <button id="edit-btn-delete" onclick="window.app.removeSelectedTrack()" disabled 
+                            class="p-2 rounded-xl bg-slate-900 border border-white/10 text-red-500/50 disabled:opacity-40 disabled:cursor-not-allowed hover:bg-red-600 hover:text-white hover:border-red-500 transition ml-1" 
+                            title="Eliminar canción seleccionada">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                        </svg>
+                    </button>
+                </div>
+
+                <button onclick="window.app.saveEditedPlaylist()" class="btn-primary text-xs py-2 px-4 flex items-center gap-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    Guardar Cambios
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATIONS CONTAINER -->
+    <div id="toast-container" class="fixed top-20 right-6 z-50 space-y-2 max-w-sm pointer-events-none"></div>
+
+    <!-- JS Scripts -->
+    <script src="/static/js/player.js?v=1.3.10"></script>
+    <script src="/static/js/rclone.js?v=1.3.10"></script>
+    <script src="/static/js/app.js?v=1.3.10"></script>
+</body>
+</html>

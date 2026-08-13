@@ -1,0 +1,10 @@
+[Interface]
+PrivateKey = YOUR_PRIVATE_KEY_HERE
+Address = 10.0.0.2/32
+DNS = 1.1.1.1, 8.8.8.8
+
+[Peer]
+PublicKey = YOUR_PUBLIC_KEY_HERE
+Endpoint = vpn.example.com:51820
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25

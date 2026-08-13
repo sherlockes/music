@@ -1,0 +1,33 @@
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Rclone configuration with credentials/tokens
+rclone/rclone.conf
+!rclone/rclone.conf.example
+
+# WireGuard VPN configuration with private keys/endpoints
+wg_config/wg_confs/*.conf
+!wg_config/wg_confs/*.example
+
+# App runtime data and user states
+app/user_states.json
+!app/user_states.json.example
+
+# Data directories (downloaded music & runtime databases)
+data/*
+!data/.gitkeep
+app/data/*
+!app/data/.gitkeep
+
+# System and log files
+.DS_Store
+Thumbs.db
+*.log
+/tmp/

@@ -1,0 +1,42 @@
+services:
+  vpn_tunnel:
+    image: linuxserver/wireguard:latest
+    container_name: wg_music_tunnel
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - ./wg_config:/config
+    networks:
+      - proxy
+    restart: unless-stopped
+
+  music:
+    build: .
+    container_name: music_app
+    network_mode: "service:vpn_tunnel"
+    depends_on:
+      - vpn_tunnel
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse:/dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - .:/app
+      - ./rclone:/root/.config/rclone
+      - ./data/cloud_music:/mnt/cloud_music:rshared
+    environment:
+      - TZ=Europe/Madrid
+      - MUSIC_DIR=/mnt/cloud_music
+      - RCLONE_CONFIG=/root/.config/rclone/rclone.conf
+      - RCLONE_REMOTE=${RCLONE_REMOTE:-cloud_music:}
+      - RCLONE_AUTO_MOUNT=${RCLONE_AUTO_MOUNT:-false}
+    restart: unless-stopped
+
+networks:
+  proxy:
+    external: true
