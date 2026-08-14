@@ -13,6 +13,7 @@ class AudioPlayer {
         this.preloadedNextIndex = -1;
         this.preloadedNextBlobUrl = null;
         this.isPreloadingNext = false;
+        this.interruptedState = null;
 
         // DOM elements
         this.initDOMElements();
@@ -179,17 +180,17 @@ class AudioPlayer {
             this.elBottomPlayer.classList.remove('hidden');
         }
 
-        // Format artist / source line
-        let artistText = track.artist || track.channel || '';
-        if (track.playlist_name) {
-            artistText = artistText ? `${artistText} • Lista: ${track.playlist_name}` : `Lista: ${track.playlist_name}`;
-        } else if (track.is_trending || track.trending_source) {
-            artistText = artistText ? `${artistText} • ${track.trending_source || 'Tendencias'}` : 'Tendencias';
+        // Format title and artist lines cleanly
+        let titleText = track.title || 'Canción Desconocida';
+        let artistText = track.artist || track.channel || 'Desconocido';
+        if (window.app && typeof window.app.parseSongInfo === 'function') {
+            const parsed = window.app.parseSongInfo(track);
+            titleText = parsed.title;
+            artistText = parsed.artist;
         }
-        if (!artistText) artistText = 'Desconocido';
 
         // Update UI
-        if (this.elTitle) this.elTitle.innerText = track.title || 'Canción Desconocida';
+        if (this.elTitle) this.elTitle.innerText = titleText;
         if (this.elArtist) this.elArtist.innerText = artistText;
         this.updateTextMarquees();
 
@@ -237,10 +238,12 @@ class AudioPlayer {
         }
 
         if (!streamUrl) {
-            if (track.is_yt || track.id) {
+            if (track.filename) {
+                streamUrl = `/api/stream/${encodeURIComponent(track.filename)}`;
+            } else if (track.is_yt || track.id) {
                 streamUrl = `/api/stream_yt?v=${encodeURIComponent(track.id)}`;
             } else {
-                streamUrl = `/api/stream/${encodeURIComponent(track.filename)}`;
+                streamUrl = `/api/stream_yt?v=${encodeURIComponent(`${track.artist || ''} ${track.title || ''}`.trim())}`;
             }
         }
 
@@ -341,7 +344,11 @@ class AudioPlayer {
         }
 
         if (!streamUrl) {
-            streamUrl = `/api/stream_yt?v=${encodeURIComponent(track.id)}`;
+            if (track.preview || track.preview_url) {
+                streamUrl = track.preview || track.preview_url;
+            } else if (track.id) {
+                streamUrl = `/api/stream_yt?v=${encodeURIComponent(track.id)}`;
+            }
         }
 
         this.audio.src = streamUrl;
@@ -382,6 +389,103 @@ class AudioPlayer {
         });
     }
 
+    playNowWithResume(track) {
+        if (!track) return;
+
+        // Check if track is already in the active default playlist
+        const existingIdx = this.playlist.findIndex(t => 
+            (track.filename && t.filename === track.filename) || 
+            (track.id && t.id === track.id)
+        );
+
+        if (existingIdx !== -1) {
+            // Already in playlist: jump to it and play without removing other songs
+            this.loadTrack(existingIdx, true);
+        } else {
+            // Insert right after current song (or at end) so other songs are NEVER wiped out
+            const insertIdx = (this.currentIndex >= 0 && this.currentIndex < this.playlist.length) 
+                ? this.currentIndex + 1 
+                : this.playlist.length;
+            this.playlist.splice(insertIdx, 0, track);
+            this.loadTrack(insertIdx, true);
+        }
+
+        this.renderQueue();
+        this.triggerSaveUserState();
+    }
+
+    playNextInQueue(track) {
+        if (!track) return;
+
+        // If playback is empty, initialize with this track
+        if (this.playlist.length === 0 || this.currentIndex === -1) {
+            this.playlist = [track];
+            this.currentIndex = 0;
+            this.loadTrack(0, true);
+            return;
+        }
+
+        // Insert next in queue after current song without wiping out the rest of the list
+        const insertIdx = (this.currentIndex >= 0 && this.currentIndex < this.playlist.length) 
+            ? this.currentIndex + 1 
+            : this.playlist.length;
+        this.playlist.splice(insertIdx, 0, track);
+        this.renderQueue();
+        this.triggerSaveUserState();
+    }
+
+    removeFromQueue(index) {
+        if (index < 0 || index >= this.playlist.length) return;
+        const removedTrack = this.playlist[index];
+        const isCurrent = index === this.currentIndex;
+
+        this.playlist.splice(index, 1);
+
+        if (this.playlist.length === 0) {
+            this.currentIndex = -1;
+            if (this.audio) {
+                this.audio.pause();
+                this.audio.src = '';
+            }
+            this.isPlaying = false;
+            this.updatePlayButton();
+            if (this.elTitle) this.elTitle.innerText = 'No hay reproducción';
+            if (this.elArtist) this.elArtist.innerText = '';
+        } else if (isCurrent) {
+            const newIndex = index < this.playlist.length ? index : this.playlist.length - 1;
+            this.loadTrack(newIndex, this.isPlaying);
+        } else if (index < this.currentIndex) {
+            this.currentIndex--;
+        }
+
+        this.renderQueue();
+        this.triggerSaveUserState();
+        if (window.app && typeof window.app.showToast === 'function') {
+            window.app.showToast(`Quitada de la lista: ${removedTrack.title || 'Canción'}`, 'info');
+        }
+    }
+
+    clearQueue() {
+        if (this.playlist.length === 0) return;
+        if (!confirm('¿Deseas vaciar la lista de reproducción disponible?')) return;
+
+        this.playlist = [];
+        this.currentIndex = -1;
+        if (this.audio) {
+            this.audio.pause();
+            this.audio.src = '';
+        }
+        this.isPlaying = false;
+        this.updatePlayButton();
+        if (this.elTitle) this.elTitle.innerText = 'No hay reproducción';
+        if (this.elArtist) this.elArtist.innerText = '';
+        this.renderQueue();
+        this.triggerSaveUserState();
+        if (window.app && typeof window.app.showToast === 'function') {
+            window.app.showToast('Lista de reproducción vaciada', 'info');
+        }
+    }
+
     togglePlay() {
         if (this.currentIndex === -1 && this.playlist.length > 0) {
             this.loadTrack(0, true);
@@ -405,6 +509,20 @@ class AudioPlayer {
     }
 
     playNext() {
+        // If we are playing an interrupted single track and user presses next, restore previous queue and advance
+        if (this.interruptedState && this.playlist.length === 1) {
+            const stateToRestore = this.interruptedState;
+            this.interruptedState = null;
+            if (stateToRestore.playlist && stateToRestore.playlist.length > 0) {
+                this.playlist = stateToRestore.playlist;
+                this.currentIndex = (stateToRestore.currentIndex >= 0 && stateToRestore.currentIndex < this.playlist.length) 
+                    ? (stateToRestore.currentIndex + 1) % stateToRestore.playlist.length 
+                    : 0;
+                this.loadTrack(this.currentIndex, true);
+                return;
+            }
+        }
+
         if (this.playlist.length === 0) return;
 
         let nextIdx = -1;
@@ -477,10 +595,15 @@ class AudioPlayer {
             : null;
 
         if (this.isRepeat) {
+            // Repeat single track
             this.audio.currentTime = 0;
-            this.audio.play();
-        } else {
+            this.audio.play().catch(console.error);
+        } else if (this.playlist.length > 0) {
+            // Loop and play the next track among available tracks (restarting from the beginning if reaching the end)
             this.playNext();
+        } else {
+            this.isPlaying = false;
+            this.updatePlayButton();
         }
 
         if (finishedTrack && window.app && window.app.storageManager) {
@@ -642,31 +765,64 @@ class AudioPlayer {
 
     renderQueue() {
         if (!this.elQueueList) return;
+
+        const countBadge = document.getElementById('queue-count-badge');
+        if (countBadge) {
+            countBadge.textContent = this.playlist.length;
+        }
+
         if (this.playlist.length === 0) {
-            this.elQueueList.innerHTML = `<p class="text-xs text-gray-500 p-3 text-center">La cola está vacía</p>`;
+            this.elQueueList.innerHTML = `
+                <div class="p-6 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                    </svg>
+                    <span>No hay pistas en la lista</span>
+                </div>
+            `;
             return;
         }
 
         this.elQueueList.innerHTML = this.playlist.map((track, i) => {
             const isActive = i === this.currentIndex;
-            let statusIcon = (i + 1).toString();
+            let statusIcon = `<span class="font-mono text-[11px]">${i + 1}</span>`;
             if (isActive) {
                 if (this.isLoading) {
                     statusIcon = `<svg class="animate-spin w-3.5 h-3.5 text-purple-400 inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
                 } else if (this.isPlaying) {
-                    statusIcon = '▶';
+                    statusIcon = `<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400 fill-current" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
                 } else {
-                    statusIcon = '⏸';
+                    statusIcon = `<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400 fill-current" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
                 }
             }
+
+            let title = track.title || track.filename || 'Canción';
+            let artist = track.artist || track.channel || 'Desconocido';
+            if (window.app && typeof window.app.parseSongInfo === 'function') {
+                const parsed = window.app.parseSongInfo(track);
+                title = parsed.title;
+                artist = parsed.artist;
+            }
+
             return `
-                <div onclick="window.player.loadTrack(${i}, true)" class="flex items-center gap-3 p-2 rounded-lg cursor-pointer transition ${isActive ? 'bg-purple-900/40 text-purple-200 border border-purple-500/30' : 'hover:bg-slate-800/60 text-gray-300'}">
-                    <span class="text-xs font-mono w-4 text-center ${isActive ? 'text-purple-400 font-bold' : 'text-gray-500'} flex items-center justify-center">${statusIcon}</span>
-                    <div class="flex-1 min-w-0">
-                        <p class="text-xs font-medium truncate">${this.escapeHtml(track.title || track.filename)}</p>
-                        <p class="text-[10px] text-gray-400 truncate">${this.escapeHtml(track.artist || 'Desconocido')}</p>
+                <div class="group flex items-center justify-between gap-2 p-2 rounded-xl transition ${isActive ? 'bg-purple-900/40 text-purple-200 border border-purple-500/40 shadow-sm' : 'hover:bg-slate-800/60 text-slate-300 border border-transparent'}">
+                    <div onclick="window.player.loadTrack(${i}, true)" class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer">
+                        <span class="w-5 text-center ${isActive ? 'text-purple-400 font-bold' : 'text-slate-500'} flex items-center justify-center flex-shrink-0">${statusIcon}</span>
+                        <div class="flex-1 min-w-0">
+                            <p class="text-xs font-semibold truncate leading-tight ${isActive ? 'text-purple-200 font-bold' : 'text-slate-200'}">${this.escapeHtml(title)}</p>
+                            <p class="text-[10px] text-slate-400 truncate leading-tight">${this.escapeHtml(artist)}</p>
+                        </div>
                     </div>
-                    <span class="text-[10px] text-gray-500 font-mono">${track.duration_string || ''}</span>
+                    <div class="flex items-center gap-1 flex-shrink-0">
+                        <span class="text-[10px] text-slate-500 font-mono hidden sm:inline">${track.duration_string || ''}</span>
+                        <button onclick="event.stopPropagation(); window.player.removeFromQueue(${i})" 
+                                class="p-1 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition"
+                                title="Quitar de la lista">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
                 </div>
             `;
         }).join('');

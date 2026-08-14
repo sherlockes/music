@@ -102,10 +102,13 @@ def get_track_metadata(filepath: Path) -> Dict[str, Any]:
         except Exception as e:
             logger.debug(f"Metadata parsing skipped for {filename}: {e}")
 
+    from app.services.ytdlp_service import clean_song_metadata
+    clean_title, clean_artist = clean_song_metadata(title, artist_raw=artist)
+
     return {
         "filename": filename,
-        "title": title,
-        "artist": artist,
+        "title": clean_title,
+        "artist": clean_artist,
         "album": album,
         "duration": duration,
         "duration_string": format_duration(duration),

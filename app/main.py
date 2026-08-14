@@ -19,10 +19,20 @@ from app.config import BASE_DIR, MUSIC_DIR
 from app.services.ytdlp_service import (
     search_youtube,
     get_trending_tracks,
+    get_trending_tracks_with_meta,
     get_yt_stream_url,
     start_download_job,
     process_download_task,
     download_tasks
+)
+from app.services.deezer_service import (
+    search_artists,
+    get_artist_details,
+    get_artist_top_tracks,
+    get_artist_albums,
+    get_album_details,
+    get_artist_full_view,
+    search_tracks as search_deezer_tracks
 )
 from app.services.library_service import (
     get_library_files,
@@ -63,9 +73,9 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("music_app")
 
 app = FastAPI(
-    title="Music Docker App",
-    description="YouTube Audio Search, Download, Streaming & Rclone Cloud Manager",
-    version="1.4.12"
+    title="Music App API",
+    description="Backend for Music Downloader & Cloud Player with Deezer Discovery & Multi-User Playlists",
+    version="1.4.27"
 )
 
 # Startup event: Rclone mount watchdog background loop
@@ -84,11 +94,11 @@ async def start_rclone_watchdog():
 
     async def prewarm_trending():
         try:
-            logger.info("[Startup] Pre-warming LOS40 trending cache...")
-            await get_trending_tracks(limit=40, region="los40", force_refresh=True)
-            logger.info("[Startup] Pre-warmed LOS40 trending cache successfully.")
+            logger.info("[Startup] Checking LOS40 trending cache...")
+            await get_trending_tracks(limit=40, region="los40", force_refresh=False)
+            logger.info("[Startup] LOS40 trending cache check completed.")
         except Exception as e:
-            logger.error(f"[Startup] Error pre-warming LOS40 trending cache: {e}")
+            logger.error(f"[Startup] Error checking LOS40 trending cache: {e}")
 
     asyncio.create_task(prewarm_trending())
 
@@ -98,9 +108,16 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # Pydantic Schemas
 class DownloadRequest(BaseModel):
-    url: str
+    url: Optional[str] = ""
     video_id: Optional[str] = None
     title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    cover_url: Optional[str] = None
+    year: Optional[str] = None
+
+class DownloadAlbumRequest(BaseModel):
+    album_id: int
 
 class ImportTrackItem(BaseModel):
     filename: Optional[str] = None
@@ -275,9 +292,14 @@ async def api_trending(
     refresh: bool = Query(False)
 ):
     """Return top trending individual music singles and pre-warms top audio streams in background cache."""
-    tracks = await get_trending_tracks(limit=limit, region=region, force_refresh=refresh)
+    tracks, last_fetched, can_refresh = await get_trending_tracks_with_meta(limit=limit, region=region, force_refresh=refresh)
     prewarm_yt_results(tracks, top_n=3)
-    return {"region": region, "results": tracks}
+    return {
+        "region": region,
+        "results": tracks,
+        "last_fetched": last_fetched,
+        "can_refresh": can_refresh
+    }
 
 
 @app.get("/api/preload_yt")
@@ -311,7 +333,18 @@ async def api_stream_yt(
         if m:
             v_id = m.group(1)
 
-    video_url = f"https://www.youtube.com/watch?v={v_id}" if len(v_id) == 11 else v
+    if not (v_id.startswith("http://") or v_id.startswith("https://")) and len(v_id) != 11:
+        raw_res = await search_youtube(f"{v_id} audio oficial", limit=1)
+        if not raw_res:
+            raw_res = await search_youtube(v_id, limit=1)
+        if raw_res and raw_res[0].get("id"):
+            v_id = raw_res[0]["id"]
+            video_url = f"https://www.youtube.com/watch?v={v_id}"
+        else:
+            raise HTTPException(status_code=404, detail="No se encontró el audio en YouTube")
+    else:
+        video_url = f"https://www.youtube.com/watch?v={v_id}" if len(v_id) == 11 else v
+
     safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', v_id)
     cache_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a"
     tmp_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a.tmp"
@@ -391,25 +424,104 @@ async def api_stream_yt(
 
 
 
+# ==========================================
+# API ENDPOINTS: MUSIC EXPLORATION (DEEZER)
+# ==========================================
+
+@app.get("/api/music/artists")
+async def api_search_artists(q: str = Query(..., min_length=1, description="Nombre de artista a buscar")):
+    """Search musical artists via Deezer API with clean profiles and metrics."""
+    artists = await search_artists(q, limit=30)
+    return {"query": q, "results": artists}
+
+
+@app.get("/api/music/artist/{artist_id}")
+async def api_get_artist(artist_id: int):
+    """Get full artist details: bio metrics, top tracks, and albums."""
+    data = await get_artist_full_view(artist_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Artista no encontrado")
+    return data
+
+
+@app.get("/api/music/album/{album_id}")
+async def api_get_album(album_id: int):
+    """Get album metadata and tracklist."""
+    data = await get_album_details(album_id)
+    if not data:
+        raise HTTPException(status_code=404, detail="Álbum no encontrado")
+    return data
+
+
+@app.get("/api/music/tracks")
+async def api_search_tracks(q: str = Query(..., min_length=1, description="Canción a buscar")):
+    """Direct track search via Deezer."""
+    tracks = await search_deezer_tracks(q, limit=40)
+    return {"query": q, "results": tracks}
+
+
+@app.post("/api/music/download_album")
+async def api_download_album(payload: DownloadAlbumRequest, request: Request, background_tasks: BackgroundTasks):
+    """Download all tracks from a Deezer album into the library."""
+    album_data = await get_album_details(payload.album_id)
+    if not album_data or not album_data.get("tracks"):
+        raise HTTPException(status_code=404, detail="Álbum no encontrado o sin pistas")
+
+    username = get_current_username(request)
+    album_title = album_data.get("title", "")
+    album_artist = album_data.get("artist", "")
+    album_cover = album_data.get("cover_xl") or album_data.get("cover", "")
+    album_year = album_data.get("year", "")
+
+    task_ids = []
+    for track in album_data.get("tracks", []):
+        track_title = track.get("title", "")
+        track_artist = track.get("artist") or album_artist
+        task_id = start_download_job(
+            url="",
+            title=track_title,
+            username=username,
+            artist=track_artist,
+            album=album_title,
+            cover_url=album_cover,
+            year=album_year
+        )
+        background_tasks.add_task(process_download_task, task_id, "", track_title)
+        task_ids.append(task_id)
+
+    return {
+        "success": True,
+        "message": f"Se han añadido {len(task_ids)} canciones del álbum '{album_title}' a la cola de descarga",
+        "task_ids": task_ids,
+        "album_title": album_title,
+        "count": len(task_ids)
+    }
+
+
 @app.post("/api/download")
 async def api_download(payload: DownloadRequest, request: Request, background_tasks: BackgroundTasks):
     """
-    Queue an audio download job via yt-dlp.
-    Extracts best audio (MP3 320kbps), embeds thumbnail and ID3 metadata.
+    Queue an audio download job.
+    Supports direct YouTube URLs or resolving from Artist + Title metadata.
+    Extracts best audio (MP3 320kbps), embeds high-res thumbnail and ID3 metadata.
     """
-    if not payload.url:
-        raise HTTPException(status_code=400, detail="URL de vídeo requerida")
+    if not payload.url and not (payload.artist and payload.title) and not payload.title:
+        raise HTTPException(status_code=400, detail="URL de vídeo o Artista + Canción requeridos")
 
     username = get_current_username(request)
     task_id = start_download_job(
-        url=payload.url,
+        url=payload.url or "",
         title=payload.title,
         video_id=payload.video_id,
-        username=username
+        username=username,
+        artist=payload.artist,
+        album=payload.album,
+        cover_url=payload.cover_url,
+        year=payload.year
     )
 
     # Launch worker in FastAPI BackgroundTasks
-    background_tasks.add_task(process_download_task, task_id, payload.url, payload.title)
+    background_tasks.add_task(process_download_task, task_id, payload.url or "", payload.title)
 
     return {
         "success": True,
@@ -467,7 +579,7 @@ async def api_export_playlists():
 
     export_data = {
         "app": "MusicCloud",
-        "version": "1.4.12",
+        "version": "1.4.23",
         "type": "playlists",
         "exported_at": datetime.now().isoformat(),
         "total_playlists": len(export_playlists),
@@ -708,7 +820,7 @@ async def api_export_library():
 
     export_data = {
         "app": "MusicCloud",
-        "version": "1.4.12",
+        "version": "1.4.23",
         "exported_at": datetime.now().isoformat(),
         "total_tracks": len(export_tracks),
         "tracks": export_tracks
@@ -981,6 +1093,9 @@ class UserStatePayload(BaseModel):
     last_search_results: Optional[list] = []
     last_trending_region: Optional[str] = "los40"
     last_trending_results: Optional[list] = []
+    last_artist_id: Optional[int] = None
+    last_artist_data: Optional[dict] = None
+    last_album_id: Optional[int] = None
     updated_at: Optional[float] = 0.0
 
 @app.get("/api/user/state")

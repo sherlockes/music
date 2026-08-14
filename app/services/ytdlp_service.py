@@ -3,9 +3,18 @@ import json
 import re
 import uuid
 import logging
+import time
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
 from app.config import MUSIC_DIR
+
+try:
+    import mutagen
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TYER, APIC
+except ImportError:
+    mutagen = None
 
 logger = logging.getLogger("ytdlp_service")
 
@@ -25,6 +34,78 @@ def format_duration(seconds: Optional[float]) -> str:
         return f"{hours:02d}:{minutes:02d}:{remaining_secs:02d}"
     return f"{minutes:02d}:{remaining_secs:02d}"
 
+def clean_song_metadata(title_raw: str, artist_raw: str = "", channel_raw: str = "") -> Tuple[str, str]:
+    """
+    Separates and cleans Song Title and Artist from messy YouTube video titles, ID3 tags, and channel names.
+    Returns (clean_title, clean_artist).
+    """
+    title = (title_raw or "").strip()
+    artist = (artist_raw or "").strip()
+    channel = (channel_raw or "").strip()
+
+    # 1. Strip file extensions and YouTube video ID in brackets
+    title = re.sub(r'\.(mp3|m4a|flac|wav|webm|ogg)$', '', title, flags=re.IGNORECASE).strip()
+    title = re.sub(r'\s*\[[a-zA-Z0-9_-]{11}\]$', '', title).strip()
+
+    # 2. Strip leading ranking (e.g. "#1 ", "#01 - ", "1. ")
+    title = re.sub(r'^#?\d+[\.\-\s:]+\s*', '', title).strip()
+
+    # 3. Clean noise suffixes / video tags
+    noise_patterns = [
+        r'\s*[\(\[\{]\s*(?:official\s+)?(?:music\s+)?video(?:clip)?(?:\s+oficial)?\s*[\)\]\}]',
+        r'\s*[\(\[\{]\s*(?:video|audio|videoclip|clip)\s+oficial\s*[\)\]\}]',
+        r'\s*[\(\[\{]\s*official\s+(?:audio|lyric\s+video|lyrics?|visualizer|video)\s*[\)\]\}]',
+        r'\s*[\(\[\{]\s*(?:audio|visualizer|lyric\s+video|lyrics?|letra)\s*[\)\]\}]',
+        r'\s*[\(\[\{]\s*(?:en\s+vivo|en\s+directo|live|remaster(?:ed)?(?:\s+\d+)?|4k|hd|hq|full\s+hd|mv)\s*[\)\]\}]',
+    ]
+    for pat in noise_patterns:
+        title = re.sub(pat, '', title, flags=re.IGNORECASE).strip()
+
+    # 4. Clean channel name if generic
+    generic_channels = {
+        "los40 españa", "spotify top españa", "spotify top global", 
+        "top hits", "youtube", "desconocido", "comunidad", 
+        "various artists", "varios artistas"
+    }
+    clean_channel = channel
+    if clean_channel.lower() in generic_channels:
+        clean_channel = ""
+    else:
+        clean_channel = re.sub(r'\s*-\s*Topic$', '', clean_channel, flags=re.IGNORECASE).strip()
+        clean_channel = re.sub(r'VEVO$', '', clean_channel, flags=re.IGNORECASE).strip()
+        clean_channel = re.sub(r'\s+Official$', '', clean_channel, flags=re.IGNORECASE).strip()
+        clean_channel = re.sub(r'\s+Oficial$', '', clean_channel, flags=re.IGNORECASE).strip()
+
+    parsed_artist = artist if (artist and artist.lower() not in generic_channels) else clean_channel
+
+    # 5. Check if title contains separator (e.g. "Artist - Song", "Artist – Song", "Artist — Song")
+    sep_match = re.search(r'\s+[-–—:|]\s+', title)
+    if sep_match:
+        parts = re.split(r'\s+[-–—:|]\s+', title, maxsplit=1)
+        part_left = parts[0].strip()
+        part_right = parts[1].strip()
+
+        # Remove quotes around song title if any: e.g. Artist - "Song"
+        part_right = re.sub(r'^["\'«](.*)["\'»]$', r'\1', part_right).strip()
+
+        for pat in noise_patterns:
+            part_right = re.sub(pat, '', part_right, flags=re.IGNORECASE).strip()
+
+        if part_left and part_right:
+            parsed_artist = part_left
+            parsed_title = part_right
+        else:
+            parsed_title = title
+    else:
+        parsed_title = title
+
+    if not parsed_artist or parsed_artist.lower() in generic_channels:
+        parsed_artist = clean_channel or "Desconocido"
+
+    parsed_title = re.sub(r'^["\'«](.*)["\'»]$', r'\1', parsed_title).strip()
+
+    return parsed_title or "Canción", parsed_artist or "Desconocido"
+
 async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     """
     Search YouTube using yt-dlp flat-playlist json dump.
@@ -37,7 +118,9 @@ async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         "--dump-json",
         "--flat-playlist",
         "--skip-download",
-        "--no-warnings"
+        "--no-warnings",
+        "--geo-bypass",
+        "--extractor-args", "youtube:player_client=android,web"
     ]
     
     results = []
@@ -61,8 +144,9 @@ async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
             try:
                 data = json.loads(line)
                 video_id = data.get("id", "")
-                title = data.get("title", "Desconocido")
-                channel = data.get("uploader") or data.get("channel") or data.get("uploader_id") or "Desconocido"
+                raw_title = data.get("title", "Desconocido")
+                raw_channel = data.get("uploader") or data.get("channel") or data.get("uploader_id") or "Desconocido"
+                clean_title, clean_artist = clean_song_metadata(raw_title, channel_raw=raw_channel)
                 duration = data.get("duration")
                 # Reject tracks under 30s or over 600s (10 minutes)
                 if duration is not None and (duration < 30 or duration > 600):
@@ -79,8 +163,9 @@ async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
                 results.append({
                     "id": video_id,
                     "url": f"https://www.youtube.com/watch?v={video_id}" if video_id else data.get("url", ""),
-                    "title": title,
-                    "channel": channel,
+                    "title": clean_title,
+                    "artist": clean_artist,
+                    "channel": clean_artist,
                     "duration": duration,
                     "duration_string": format_duration(duration),
                     "thumbnail": thumbnail_url,
@@ -95,13 +180,66 @@ async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
 
     return results
 
-TRENDING_CACHE: Dict[str, Dict[str, Any]] = {
-    "es": {"tracks": [], "last_fetched": 0},
-    "global": {"tracks": [], "last_fetched": 0},
-    "los40": {"tracks": [], "last_fetched": 0},
-    "spotify_es": {"tracks": [], "last_fetched": 0},
-    "spotify_global": {"tracks": [], "last_fetched": 0}
-}
+TRENDING_CACHE_FILE = Path(__file__).resolve().parent.parent / "data" / "trending_cache.json"
+
+def load_trending_cache() -> Dict[str, Dict[str, Any]]:
+    default_cache = {
+        "es": {"tracks": [], "last_fetched": 0},
+        "global": {"tracks": [], "last_fetched": 0},
+        "los40": {"tracks": [], "last_fetched": 0},
+        "spotify_es": {"tracks": [], "last_fetched": 0},
+        "spotify_global": {"tracks": [], "last_fetched": 0}
+    }
+    if TRENDING_CACHE_FILE.exists():
+        try:
+            with open(TRENDING_CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                for k, v in data.items():
+                    if k in default_cache and isinstance(v, dict):
+                        default_cache[k] = v
+        except Exception as e:
+            logger.error(f"Error loading trending_cache.json: {e}")
+    return default_cache
+
+def save_trending_cache():
+    try:
+        TRENDING_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(TRENDING_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(TRENDING_CACHE, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving trending_cache.json: {e}")
+
+TRENDING_CACHE: Dict[str, Dict[str, Any]] = load_trending_cache()
+
+def is_trending_cache_expired(last_fetched: float) -> bool:
+    """
+    Trending lists are updated weekly on Mondays.
+    Check if the cached list is older than 7 days or has crossed into the next Monday.
+    """
+    if not last_fetched or last_fetched <= 0:
+        return True
+    now = time.time()
+    # If older than 7 days (1 week), it has expired
+    if (now - last_fetched) >= 7 * 86400:
+        return True
+    
+    try:
+        fetched_dt = datetime.fromtimestamp(last_fetched)
+        now_dt = datetime.fromtimestamp(now)
+        
+        # Days ahead to reach next Monday 00:00:00 (Monday is 0, Sunday is 6)
+        days_ahead = 7 - fetched_dt.weekday()
+        if days_ahead <= 0:
+            days_ahead = 7
+        next_monday = (fetched_dt + timedelta(days=days_ahead)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        if now_dt >= next_monday:
+            return True
+    except Exception:
+        pass
+        
+    return False
 
 MIX_KEYWORDS = ["mix", "compilation", "recopilatorio", "sesion", "sesión", "enganchado", "completo", "horas", "top 50", "top 20", "top 100", "full album", "album", "áldum"]
 
@@ -156,7 +294,7 @@ async def fetch_spotify_chart(chart_type: str = "es") -> List[Tuple[str, str]]:
 async def fetch_single_yt_track(artist: str, song: str, rank: int, sem: Optional[asyncio.Semaphore] = None, custom_channel: str = "LOS40 España") -> Optional[Dict[str, Any]]:
     query = f"{artist} {song} video oficial"
     search_target = f"ytsearch1:{query}"
-    cmd = ["yt-dlp", search_target, "--dump-json", "--flat-playlist", "--skip-download", "--no-warnings"]
+    cmd = ["yt-dlp", search_target, "--dump-json", "--flat-playlist", "--skip-download", "--no-warnings", "--geo-bypass", "--extractor-args", "youtube:player_client=android,web"]
     
     async def _do_fetch():
         try:
@@ -171,11 +309,14 @@ async def fetch_single_yt_track(artist: str, song: str, rank: int, sem: Optional
                             duration = data.get("duration")
                             if duration and (duration < 30 or duration > 600):
                                 continue
+                            clean_title, clean_artist = clean_song_metadata(song, artist_raw=artist)
                             return {
                                 "id": v_id,
                                 "url": f"https://www.youtube.com/watch?v={v_id}" if v_id else data.get("url", ""),
-                                "title": f"#{rank} {artist} - {song}",
-                                "channel": custom_channel,
+                                "title": clean_title,
+                                "artist": clean_artist,
+                                "channel": clean_artist,
+                                "rank": rank,
                                 "duration": duration,
                                 "duration_string": format_duration(duration),
                                 "thumbnail": f"https://i.ytimg.com/vi/{v_id}/hqdefault.jpg" if v_id else ""
@@ -207,11 +348,15 @@ async def get_yt_stream_url(video_url: str) -> Optional[str]:
     return None
 
 async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh: bool = False) -> List[Dict[str, Any]]:
+    """Fetch current trending individual music singles on YouTube."""
+    tracks, _, _ = await get_trending_tracks_with_meta(limit=limit, region=region, force_refresh=force_refresh)
+    return tracks
+
+async def get_trending_tracks_with_meta(limit: int = 40, region: str = "es", force_refresh: bool = False) -> Tuple[List[Dict[str, Any]], float, bool]:
     """
-    Fetch current trending individual music singles on YouTube.
-    Regions: 'es' (España), 'global' (Internacional), 'los40' (LOS40 Principales España).
+    Fetch trending tracks with Monday weekly caching and persistence.
+    Returns (tracks, last_fetched_timestamp, can_refresh_bool).
     """
-    import time
     now = time.time()
     region_lower = (region or "es").lower()
 
@@ -227,9 +372,12 @@ async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh
         clean_region = "es"
 
     cache_entry = TRENDING_CACHE.get(clean_region, {"tracks": [], "last_fetched": 0})
+    last_fetched = cache_entry.get("last_fetched", 0)
+    is_expired = is_trending_cache_expired(last_fetched)
 
-    if not force_refresh and cache_entry["tracks"] and (now - cache_entry["last_fetched"]) < 3600:
-        return cache_entry["tracks"]
+    # If cached tracks exist and cache is NOT expired, return cached immediately
+    if cache_entry["tracks"] and not is_expired and not force_refresh:
+        return cache_entry["tracks"], last_fetched, False
 
     if clean_region == "los40":
         chart = await fetch_los40_official_chart()
@@ -244,11 +392,12 @@ async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh
                     "tracks": los40_results,
                     "last_fetched": now
                 }
-                return los40_results
+                save_trending_cache()
+                return los40_results, now, False
         
         if cache_entry["tracks"]:
             logger.warning("LOS40 fresh chart fetch failed or was empty; returning stale cached tracks.")
-            return cache_entry["tracks"]
+            return cache_entry["tracks"], last_fetched, is_expired
 
     if clean_region in ["spotify_es", "spotify_global"]:
         chart_type = "es" if clean_region == "spotify_es" else "global"
@@ -265,11 +414,12 @@ async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh
                     "tracks": spotify_results,
                     "last_fetched": now
                 }
-                return spotify_results
+                save_trending_cache()
+                return spotify_results, now, False
 
         if cache_entry["tracks"]:
             logger.warning(f"Spotify {clean_region} fresh chart fetch failed; returning cached tracks.")
-            return cache_entry["tracks"]
+            return cache_entry["tracks"], last_fetched, is_expired
 
     # Region-specific search target for general search
     if clean_region == "global":
@@ -303,22 +453,62 @@ async def get_trending_tracks(limit: int = 40, region: str = "es", force_refresh
             "tracks": final_results,
             "last_fetched": now
         }
-    return final_results
+        save_trending_cache()
+        return final_results, now, False
+
+    return cache_entry.get("tracks", []), last_fetched, is_expired
 
 async def process_download_task(task_id: str, url: str, title: Optional[str] = None):
     """
     Background worker to execute yt-dlp audio extraction with metadata & artwork embedding.
-    Downloads locally to /tmp/music_downloads first, then moves the finished .mp3 to /mnt/cloud_music
-    to prevent FUSE rclone lockups or temp file sync context cancellation errors.
+    Supports resolving YouTube videos from clean metadata (Artist, Title) and embedding high-res ID3 tags.
+    Downloads locally to /tmp/music_downloads first, then moves the finished .mp3 to /mnt/cloud_music.
     """
     import shutil
+    import urllib.request
 
     if task_id not in download_tasks:
         return
 
-    download_tasks[task_id]["status"] = "downloading"
-    download_tasks[task_id]["progress"] = 0
+    task_info = download_tasks[task_id]
+    task_info["status"] = "downloading"
+    task_info["progress"] = 0
 
+    artist_meta = task_info.get("artist") or ""
+    title_meta = task_info.get("title") or title or ""
+    album_meta = task_info.get("album") or ""
+    cover_meta = task_info.get("cover_url") or ""
+    year_meta = task_info.get("year") or ""
+    v_id = task_info.get("video_id") or ""
+
+    # If url is not a valid http url, resolve it via YouTube search
+    if not url or not (url.startswith("http://") or url.startswith("https://")):
+        task_info["status"] = "searching"
+        search_query = f"{artist_meta} {title_meta}".strip()
+        logger.info(f"Resolving YouTube video for track: '{search_query}'")
+        
+        # Try targeted search
+        match = await fetch_single_yt_track(artist_meta, title_meta, 1)
+        if match and match.get("url"):
+            url = match["url"]
+            v_id = match.get("id") or ""
+            task_info["url"] = url
+            task_info["video_id"] = v_id
+        else:
+            raw_res = await search_youtube(f"{search_query} audio oficial", limit=1)
+            if not raw_res:
+                raw_res = await search_youtube(search_query, limit=1)
+            if raw_res and raw_res[0].get("url"):
+                url = raw_res[0]["url"]
+                v_id = raw_res[0].get("id") or ""
+                task_info["url"] = url
+                task_info["video_id"] = v_id
+            else:
+                task_info["status"] = "failed"
+                task_info["error"] = f"No se encontró el audio en YouTube para '{search_query}'"
+                return
+
+    task_info["status"] = "downloading"
     temp_dir = Path("/tmp/music_downloads")
     temp_dir.mkdir(parents=True, exist_ok=True)
 
@@ -334,6 +524,8 @@ async def process_download_task(task_id: str, url: str, title: Optional[str] = N
         "--add-metadata",
         "--no-playlist",
         "--newline",
+        "--geo-bypass",
+        "--extractor-args", "youtube:player_client=android,web",
         "--output", output_template,
         url
     ]
@@ -362,15 +554,15 @@ async def process_download_task(task_id: str, url: str, title: Optional[str] = N
                 percent = float(match.group(1))
                 speed = match.group(3)
                 eta = match.group(4)
-                download_tasks[task_id]["progress"] = min(percent, 85.0) # Reserve last 15% for cloud move
-                download_tasks[task_id]["speed"] = speed
-                download_tasks[task_id]["eta"] = eta
+                task_info["progress"] = min(percent, 85.0) # Reserve last 15% for cloud move
+                task_info["speed"] = speed
+                task_info["eta"] = eta
 
             # Audio extraction destination match
             dest_match = destination_regex.search(line_str)
             if dest_match:
                 resulting_temp_filepath = Path(dest_match.group(1).strip())
-                download_tasks[task_id]["status"] = "converting"
+                task_info["status"] = "converting"
 
         await process.wait()
 
@@ -383,20 +575,77 @@ async def process_download_task(task_id: str, url: str, title: Optional[str] = N
                     resulting_temp_filepath = mp3s[0]
 
             if resulting_temp_filepath and resulting_temp_filepath.exists():
+                # Apply custom Deezer ID3 tags and high-res cover art if available
+                if mutagen:
+                    try:
+                        audio = MP3(str(resulting_temp_filepath), ID3=ID3)
+                        try:
+                            audio.add_tags()
+                        except Exception:
+                            pass
+
+                        if title_meta:
+                            audio.tags.add(TIT2(encoding=3, text=title_meta))
+                        if artist_meta:
+                            audio.tags.add(TPE1(encoding=3, text=artist_meta))
+                        if album_meta:
+                            audio.tags.add(TALB(encoding=3, text=album_meta))
+                        if year_meta:
+                            audio.tags.add(TYER(encoding=3, text=str(year_meta)))
+
+                        if cover_meta:
+                            try:
+                                img_req = urllib.request.Request(cover_meta, headers={"User-Agent": "Mozilla/5.0"})
+                                with urllib.request.urlopen(img_req, timeout=10) as img_resp:
+                                    img_bytes = img_resp.read()
+                                    if img_bytes:
+                                        audio.tags.delall('APIC')
+                                        audio.tags.add(APIC(
+                                            encoding=3,
+                                            mime='image/jpeg',
+                                            type=3,
+                                            desc='Cover',
+                                            data=img_bytes
+                                        ))
+                            except Exception as e:
+                                logger.warning(f"Failed to embed high-res cover image from {cover_meta}: {e}")
+
+                        audio.save()
+                    except Exception as e:
+                        logger.error(f"Error embedding ID3 metadata: {e}")
+
+                # Rename cleanly if clean artist and title were provided
+                if artist_meta and title_meta:
+                    safe_artist = re.sub(r'[\\/*?:"<>|]', "", artist_meta).strip()
+                    safe_title = re.sub(r'[\\/*?:"<>|]', "", title_meta).strip()
+                    # Extract yt id if present in filename
+                    if not v_id:
+                        m = re.search(r'\[([a-zA-Z0-9_-]{11})\]\.mp3$', resulting_temp_filepath.name)
+                        if m:
+                            v_id = m.group(1)
+                    suffix_id = f" [{v_id}]" if v_id else ""
+                    clean_filename = f"{safe_artist} - {safe_title}{suffix_id}.mp3"
+                    clean_dest = resulting_temp_filepath.parent / clean_filename
+                    try:
+                        resulting_temp_filepath.rename(clean_dest)
+                        resulting_temp_filepath = clean_dest
+                    except Exception:
+                        pass
+
                 filename = resulting_temp_filepath.name
                 target_filepath = MUSIC_DIR / filename
 
-                download_tasks[task_id]["status"] = "uploading"
-                download_tasks[task_id]["progress"] = 92.0
+                task_info["status"] = "uploading"
+                task_info["progress"] = 92.0
 
                 # Move fully prepared .mp3 file to cloud storage
                 shutil.move(str(resulting_temp_filepath), str(target_filepath))
 
-                download_tasks[task_id]["status"] = "completed"
-                download_tasks[task_id]["progress"] = 100.0
-                download_tasks[task_id]["speed"] = "0KiB/s"
-                download_tasks[task_id]["eta"] = "00:00"
-                download_tasks[task_id]["filename"] = filename
+                task_info["status"] = "completed"
+                task_info["progress"] = 100.0
+                task_info["speed"] = "0KiB/s"
+                task_info["eta"] = "00:00"
+                task_info["filename"] = filename
 
                 # Invalidate library cache so the track displays instantly
                 try:
@@ -408,24 +657,24 @@ async def process_download_task(task_id: str, url: str, title: Optional[str] = N
                 # Record track owner in app metadata
                 try:
                     from app.services.playlist_service import set_track_owner
-                    username = download_tasks[task_id].get("downloaded_by", "invitado")
+                    username = task_info.get("downloaded_by", "invitado")
                     set_track_owner(filename, username)
                 except Exception as ex:
                     logger.error(f"Error setting track owner: {ex}")
             else:
-                download_tasks[task_id]["status"] = "failed"
-                download_tasks[task_id]["error"] = "No se pudo localizar el archivo MP3 procesado"
+                task_info["status"] = "failed"
+                task_info["error"] = "No se pudo localizar el archivo MP3 procesado"
         else:
             stderr_out = await process.stderr.read()
             err_msg = stderr_out.decode('utf-8', errors='ignore')
             logger.error(f"Download failed for {task_id}: {err_msg}")
-            download_tasks[task_id]["status"] = "failed"
-            download_tasks[task_id]["error"] = err_msg or "yt-dlp exited with error"
+            task_info["status"] = "failed"
+            task_info["error"] = err_msg or "yt-dlp exited with error"
 
     except Exception as e:
         logger.error(f"Exception during download task {task_id}: {e}")
-        download_tasks[task_id]["status"] = "failed"
-        download_tasks[task_id]["error"] = str(e)
+        task_info["status"] = "failed"
+        task_info["error"] = str(e)
     finally:
         # Cleanup any leftover temporary files in temp_dir
         try:
@@ -435,9 +684,19 @@ async def process_download_task(task_id: str, url: str, title: Optional[str] = N
         except Exception:
             pass
 
-def start_download_job(url: str, title: Optional[str] = None, video_id: Optional[str] = None, username: str = "invitado") -> str:
+def start_download_job(
+    url: str,
+    title: Optional[str] = None,
+    video_id: Optional[str] = None,
+    username: str = "invitado",
+    artist: Optional[str] = None,
+    album: Optional[str] = None,
+    cover_url: Optional[str] = None,
+    year: Optional[str] = None
+) -> str:
     """
-    Registers and launches an async download task with owner username. Returns unique task_id.
+    Registers and launches an async download task with owner username and rich metadata tags.
+    Returns unique task_id.
     """
     task_id = str(uuid.uuid4())
     download_tasks[task_id] = {
@@ -445,6 +704,10 @@ def start_download_job(url: str, title: Optional[str] = None, video_id: Optional
         "video_id": video_id or "",
         "url": url,
         "title": title or "Audio YouTube",
+        "artist": artist or "",
+        "album": album or "",
+        "cover_url": cover_url or "",
+        "year": year or "",
         "progress": 0.0,
         "speed": "--",
         "eta": "--",

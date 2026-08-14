@@ -13,6 +13,14 @@ class MusicApp {
         this.editingPlaylistId = null;
         this.editingTracks = [];
         this.selectedEditTrackIndex = null;
+        this.selectedModalTrack = null;
+        this.selectedModalTrackRank = null;
+        this.selectedModalTrackContext = null;
+        this.currentArtistData = null;
+        this.currentArtistTab = 'top';
+        this.currentAlbumData = null;
+        this.standalonePreview = new Audio();
+        this.wasMainPlayerPlayingBeforeModal = false;
         this.pollInterval = null;
         this.storageManager = new StorageManager(this);
         this.init();
@@ -40,6 +48,12 @@ class MusicApp {
         this.bindNavigation();
         this.bindSearch();
         this.initPwa();
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.closeSongModal();
+            }
+        });
 
         const withTimeout = (promise, ms) => Promise.race([
             promise,
@@ -136,14 +150,19 @@ class MusicApp {
         }
     }
 
-    isItemInLibrary(item) {
-        if (!this.libraryTracks || this.libraryTracks.length === 0) return false;
+    getLibraryTrackForItem(item) {
+        if (!item) return null;
+        if (item.filename && this.libraryTracks) {
+            const found = this.libraryTracks.find(t => t.filename === item.filename);
+            if (found) return found;
+        }
+        if (!this.libraryTracks || this.libraryTracks.length === 0) return null;
 
         const itemId = item.id || '';
         const itemTitleRaw = item.title || '';
         const itemTitleClean = itemTitleRaw.toLowerCase().replace(/[^a-z0-9áéíóúñ]/gi, '');
 
-        return this.libraryTracks.some(track => {
+        return this.libraryTracks.find(track => {
             const fn = track.filename || '';
             const trackTitleRaw = track.title || fn.replace(/\.(mp3|m4a|flac|wav|webm)$/i, '');
             const trackTitleClean = trackTitleRaw.toLowerCase().replace(/[^a-z0-9áéíóúñ]/gi, '');
@@ -167,7 +186,118 @@ class MusicApp {
             }
 
             return false;
-        });
+        }) || null;
+    }
+
+    isItemInLibrary(item) {
+        if (item && item.filename) return true;
+        return !!this.getLibraryTrackForItem(item);
+    }
+
+    getTrackCoverUrl(track) {
+        if (!track) return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="%238b5cf6" stroke-width="1.5"><rect width="18" height="18" x="3" y="3" rx="2" fill="%231e1b4b"/><circle cx="12" cy="12" r="4"/><polygon points="10 10 15 12 10 14 10 10"/></svg>';
+        if (track.thumbnail) return track.thumbnail;
+        if (track.has_cover && track.filename) return `/api/library/cover/${encodeURIComponent(track.filename)}`;
+        if (track.filename) return `/api/library/cover/${encodeURIComponent(track.filename)}`;
+        return 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
+    }
+
+    parseSongInfo(item) {
+        if (!item) return { title: 'Canción desconocida', artist: 'Desconocido' };
+
+        let rawTitle = item.title || item.filename || '';
+        let rawArtist = item.artist || '';
+        let rawChannel = item.channel || '';
+
+        // 1. Remove file extensions and YouTube video ID in brackets
+        let cleanTitle = rawTitle.replace(/\.(mp3|m4a|flac|wav|webm|ogg)$/i, '').trim();
+        cleanTitle = cleanTitle.replace(/\s*\[[a-zA-Z0-9_-]{11}\]$/, '').trim();
+
+        // 2. Remove leading rank numbers (#1, 1. , etc.)
+        cleanTitle = cleanTitle.replace(/^#?\d+[\.\-\s:]+\s*/, '').trim();
+
+        // 3. Remove noise video/audio tags
+        const noiseRegex = /\s*[\(\[\{]\s*(?:official\s+)?(?:music\s+)?video(?:clip)?(?:\s+oficial)?\s*[\)\]\}]|\s*[\(\[\{]\s*(?:video|audio|videoclip|clip)\s+oficial\s*[\)\]\}]|\s*[\(\[\{]\s*official\s+(?:audio|lyric\s+video|lyrics?|visualizer|video)\s*[\)\]\}]|\s*[\(\[\{]\s*(?:audio|visualizer|lyric\s+video|lyrics?|letra)\s*[\)\]\}]|\s*[\(\[\{]\s*(?:en\s+vivo|en\s+directo|live|remaster(?:ed)?(?:\s+\d+)?|4k|hd|hq|full\s+hd|mv)\s*[\)\]\}]/gi;
+        cleanTitle = cleanTitle.replace(noiseRegex, '').trim();
+
+        // 4. Clean channel name if generic
+        const genericSet = new Set(['los40 españa', 'spotify top españa', 'spotify top global', 'top hits', 'youtube', 'desconocido', 'comunidad', 'various artists', 'varios artistas']);
+        let cleanChannel = rawChannel.trim();
+        if (genericSet.has(cleanChannel.toLowerCase())) {
+            cleanChannel = '';
+        } else {
+            cleanChannel = cleanChannel.replace(/\s*-\s*Topic$/i, '').replace(/VEVO$/i, '').replace(/\s+Official$/i, '').replace(/\s+Oficial$/i, '').trim();
+        }
+
+        let parsedArtist = rawArtist.trim();
+        if (genericSet.has(parsedArtist.toLowerCase())) {
+            parsedArtist = '';
+        }
+
+        let parsedTitle = cleanTitle;
+
+        // 5. Detect separator "Artist - Title"
+        const sepMatch = cleanTitle.match(/\s+[-–—:|]\s+/);
+        if (sepMatch) {
+            const parts = cleanTitle.split(/\s+[-–—:|]\s+/);
+            const left = parts[0].trim();
+            let right = parts.slice(1).join(' - ').trim();
+
+            right = right.replace(/^["'«](.*)["'»]$/, '$1').trim();
+            right = right.replace(noiseRegex, '').trim();
+
+            if (left && right) {
+                parsedArtist = left;
+                parsedTitle = right;
+            }
+        }
+
+        if (!parsedArtist) {
+            parsedArtist = cleanChannel || 'Desconocido';
+        }
+
+        parsedTitle = parsedTitle.replace(/^["'«](.*)["'»]$/, '$1').trim();
+
+        return {
+            title: parsedTitle || 'Canción',
+            artist: parsedArtist || 'Desconocido'
+        };
+    }
+
+    toStandardPlayerTrack(track) {
+        if (!track) return null;
+        const libTrack = this.getLibraryTrackForItem(track);
+        const t = libTrack || track;
+        const { title, artist } = this.parseSongInfo(t);
+
+        if (libTrack || track.filename) {
+            return {
+                filename: t.filename,
+                title: title,
+                artist: artist,
+                has_cover: t.has_cover,
+                thumbnail: t.has_cover ? `/api/library/cover/${encodeURIComponent(t.filename)}` : (t.thumbnail || null),
+                duration_string: t.duration_string || '',
+                size_bytes: t.size_bytes || 0,
+                size_formatted: t.size_formatted || '',
+                downloaded_by: t.downloaded_by || ''
+            };
+        } else {
+            const ytQuery = `${artist} ${title}`.trim();
+            return {
+                id: track.video_id || (track.is_yt ? track.id : ytQuery),
+                title: title,
+                artist: artist,
+                channel: artist,
+                album: track.album || '',
+                thumbnail: track.cover_xl || track.cover || track.cover_medium || track.thumbnail || '',
+                duration_string: track.duration_string || '',
+                url: track.url || (track.video_id ? `https://youtube.com/watch?v=${track.video_id}` : ''),
+                is_yt: true,
+                is_trending: !!track.is_trending,
+                trending_source: track.trending_source || ''
+            };
+        }
     }
 
     // Helper fetch to send same-origin credentials for NPM authentication with optional timeout
@@ -310,10 +440,19 @@ class MusicApp {
             const searchInput = document.getElementById('search-input');
             if (searchInput) searchInput.value = this.lastSearchQuery;
         }
-        if (state.last_search_results && Array.isArray(state.last_search_results) && state.last_search_results.length > 0) {
+        if (state.last_artist_data) {
+            this.currentArtistData = state.last_artist_data;
+            if (this.currentTab === 'search') {
+                const artistsContainer = document.getElementById('search-artists-container');
+                const profileContainer = document.getElementById('artist-profile-view');
+                if (artistsContainer) artistsContainer.classList.add('hidden');
+                if (profileContainer) profileContainer.classList.remove('hidden');
+                this.renderArtistProfile(this.currentArtistData);
+            }
+        } else if (state.last_search_results && Array.isArray(state.last_search_results) && state.last_search_results.length > 0) {
             this.lastSearchResults = state.last_search_results;
             if (this.currentTab === 'search') {
-                this.renderSearchResults(this.lastSearchResults);
+                this.renderArtistSearchResults(this.lastSearchResults);
             }
         }
 
@@ -398,6 +537,8 @@ class MusicApp {
                 last_player_state: window.player ? window.player.getState() : null,
                 last_search_query: this.lastSearchQuery || '',
                 last_search_results: this.lastSearchResults || [],
+                last_artist_id: this.currentArtistData && this.currentArtistData.artist ? this.currentArtistData.artist.id : null,
+                last_artist_data: this.currentArtistData || null,
                 last_trending_region: this.trendingRegion || 'los40',
                 last_trending_results: this.currentTrendingResults || [],
                 updated_at: Date.now()
@@ -480,6 +621,19 @@ class MusicApp {
             const res = await this.customFetch(`/api/trending?region=${this.trendingRegion}&limit=40&refresh=${forceRefresh ? 'true' : 'false'}`, {}, 45000);
             if (!res.ok) throw new Error("Error cargando tendencias");
             const data = await res.json();
+            
+            // Update refresh button visibility (only show if list is > 1 week old / expired on Monday)
+            const refreshBtn = document.getElementById('trending-refresh-btn');
+            if (refreshBtn) {
+                if (data.can_refresh) {
+                    refreshBtn.classList.remove('hidden');
+                    refreshBtn.classList.add('flex');
+                } else {
+                    refreshBtn.classList.add('hidden');
+                    refreshBtn.classList.remove('flex');
+                }
+            }
+
             let results = data.results || [];
 
             // Filter out tracks under 30s or over 600s (10 minutes)
@@ -508,13 +662,7 @@ class MusicApp {
         const container = document.getElementById('trending-tracks');
         if (!container) return;
 
-        const playBtn = document.getElementById('trending-play-all-btn');
-
         if (!results || results.length === 0) {
-            if (playBtn) {
-                playBtn.disabled = true;
-                playBtn.classList.add('opacity-40', 'cursor-not-allowed');
-            }
             container.innerHTML = `
                 <div class="glass-card p-8 text-center text-gray-400">
                     <p class="text-lg font-medium">No hay canciones nuevas en tendencias.</p>
@@ -524,83 +672,39 @@ class MusicApp {
             return;
         }
 
-        if (playBtn) {
-            playBtn.disabled = false;
-            playBtn.classList.remove('opacity-40', 'cursor-not-allowed');
-        }
-
         container.innerHTML = results.map((item, idx) => {
-            const inLibrary = this.isItemInLibrary(item);
-            const downloadBtnHtml = inLibrary
-                ? `
-                    <button disabled
-                            class="w-full sm:w-auto bg-transparent border border-slate-700/60 text-slate-500 text-[10px] sm:text-xs py-0.5 px-2 sm:py-1.5 sm:px-3 flex items-center justify-center gap-1 rounded-lg sm:rounded-xl cursor-not-allowed opacity-50 min-h-[22px]"
-                            title="Esta canción ya está guardada en tu biblioteca">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 flex-shrink-0 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="7 10 12 15 17 10"/>
-                            <line x1="12" y1="15" x2="12" y2="3"/>
-                        </svg>
-                        <span class="hidden sm:inline">Descargar</span>
-                        <span class="sm:hidden">MP3</span>
-                    </button>
-                `
-                : `
-                    <button onclick="window.app.triggerDownload('${item.url}', '${this.escapeJs(item.title)}', '${item.id}', this)"
-                            class="w-full sm:w-auto btn-primary bg-gradient-to-r from-orange-500 to-amber-600 hover:from-orange-600 hover:to-amber-700 text-[10px] sm:text-xs py-0.5 px-2 sm:py-1.5 sm:px-3 flex items-center justify-center gap-1 shadow-lg min-h-[22px]">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="7 10 12 15 17 10"/>
-                            <line x1="12" y1="15" x2="12" y2="3"/>
-                        </svg>
-                        <span class="hidden sm:inline">Descargar</span>
-                        <span class="sm:hidden">MP3</span>
-                    </button>
-                `;
-
+            const { title, artist } = this.parseSongInfo(item);
+            const coverUrl = item.thumbnail || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
             return `
-            <div class="glass-card p-3 flex items-center gap-3 group hover:border-orange-500/40 transition"
+            <div class="glass-card p-3 flex items-center gap-3.5 group hover:border-orange-500/40 hover:bg-white/[0.04] transition duration-200 cursor-pointer active:scale-[0.99]"
+                 onclick="window.app.openSongModalByContext('trending', ${idx})"
                  onmouseenter="window.app.preloadYtTrack('${item.id}')"
                  ontouchstart="window.app.preloadYtTrack('${item.id}')">
                 <!-- Rank Badge & Thumbnail -->
-                <div class="relative w-14 h-14 sm:w-36 sm:h-24 rounded-lg overflow-hidden flex-shrink-0 bg-slate-950">
-                    <img src="${item.thumbnail || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300'}" 
-                         alt="${this.escapeHtml(item.title)}" 
+                <div class="relative w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden flex-shrink-0 bg-slate-950 shadow-md border border-white/5">
+                    <img src="${coverUrl}" 
+                         alt="${this.escapeHtml(title)}" 
                          class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                          loading="lazy" />
-                    <span class="absolute top-1 left-1 px-1.5 py-0.5 bg-orange-600/90 text-white text-[10px] font-bold rounded shadow">
+                    <span class="absolute top-1 left-1 px-1.5 py-0.5 bg-orange-600/90 backdrop-blur-xs text-white text-[10px] font-extrabold rounded shadow">
                         #${idx + 1}
                     </span>
-                    <span class="absolute bottom-0.5 right-0.5 px-1 py-0.2 bg-black/80 text-[9px] font-mono text-white rounded sm:text-[10px]">
-                        ${item.duration_string}
+                    <span class="absolute bottom-0.5 right-0.5 px-1 py-0.2 bg-black/80 text-[9px] font-mono text-white/90 rounded">
+                        ${item.duration_string || ''}
                     </span>
                 </div>
 
-                <!-- Center Title & Channel Meta -->
-                <div class="flex-1 min-w-0">
-                    <h3 class="font-semibold text-white text-xs sm:text-base line-clamp-2 sm:line-clamp-1 group-hover:text-orange-300 transition">
-                        ${this.escapeHtml(item.title)}
+                <!-- Right Title & Artist (1 line each) -->
+                <div class="flex-1 min-w-0 pr-1">
+                    <h3 class="font-semibold text-white text-sm sm:text-base leading-snug truncate group-hover:text-orange-300 transition">
+                        ${this.escapeHtml(title)}
                     </h3>
-                    <p class="text-[11px] sm:text-sm text-gray-400 mt-0.5 truncate font-medium flex items-center gap-1">
-                        <span class="text-orange-400">🔥</span> ${this.escapeHtml(item.channel)}
+                    <p class="text-xs sm:text-sm text-gray-400 mt-0.5 truncate font-normal">
+                        ${this.escapeHtml(artist)}
                     </p>
                 </div>
-
-                <!-- Right Action Buttons (Stacked vertically on mobile) -->
-                <div class="flex flex-col sm:flex-row items-end sm:items-center justify-center gap-1 sm:gap-1.5 flex-shrink-0">
-                    <button onclick="window.app.playPreviewTrack('${item.id}', '${this.escapeJs(item.title)}', '${this.escapeJs(item.channel)}', '${item.thumbnail}')"
-                            class="w-full sm:w-auto bg-slate-800 hover:bg-slate-700 text-purple-300 border border-purple-500/30 hover:border-purple-400 text-[10px] sm:text-xs py-0.5 px-2 sm:py-1.5 sm:px-3 flex items-center justify-center gap-1 rounded-lg sm:rounded-xl transition shadow min-h-[22px]"
-                            title="Escuchar sin descargar">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 fill-current text-purple-400 flex-shrink-0" viewBox="0 0 24 24">
-                            <polygon points="5 3 19 12 5 21 5 3"/>
-                        </svg>
-                        <span class="hidden sm:inline font-medium">Escuchar</span>
-                        <span class="sm:hidden font-medium">Oír</span>
-                    </button>
-                    ${downloadBtnHtml}
-                </div>
             </div>
-        `;
+            `;
         }).join('');
     }
 
@@ -623,8 +727,20 @@ class MusicApp {
         }
     }
 
+    formatFanCount(num) {
+        if (!num) return '0';
+        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+        if (num >= 1000) return (num / 1000).toFixed(1) + 'k';
+        return num.toString();
+    }
+
     async performSearch(query) {
+        const artistsContainer = document.getElementById('search-artists-container');
         const resultsContainer = document.getElementById('search-results');
+        const profileContainer = document.getElementById('artist-profile-view');
+        
+        if (profileContainer) profileContainer.classList.add('hidden');
+        if (artistsContainer) artistsContainer.classList.remove('hidden');
         if (!resultsContainer) return;
 
         resultsContainer.innerHTML = `
@@ -636,183 +752,536 @@ class MusicApp {
                     </svg>
                 </div>
                 <div>
-                    <p class="text-sm sm:text-base font-semibold text-purple-200">Buscando canciones en YouTube...</p>
-                    <p class="text-xs text-slate-400 mt-1">Obteniendo los mejores resultados en tiempo real</p>
+                    <p class="text-sm sm:text-base font-semibold text-purple-200">Buscando artistas en Deezer...</p>
+                    <p class="text-xs text-slate-400 mt-1">Explorando catálogo oficial y discografías</p>
                 </div>
             </div>
         `;
 
         try {
-            const response = await this.customFetch(`/api/search?q=${encodeURIComponent(query)}`, {}, 30000);
-            if (!response.ok) throw new Error("Error en la búsqueda");
+            console.log("[MusicApp] Searching artists for query:", query);
+            const response = await this.customFetch(`/api/music/artists?q=${encodeURIComponent(query)}`, {}, 15000);
+            if (!response.ok) {
+                const errText = await response.text();
+                throw new Error(`HTTP ${response.status}: ${errText}`);
+            }
             const data = await response.json();
-            let results = data.results || [];
-
-            // Filter out tracks under 30s or over 600s (10 minutes)
-            results = results.filter(item => !item.duration || (item.duration >= 30 && item.duration <= 600));
-
-            // Filter out tracks already present in the library
-            results = results.filter(item => !this.isItemInLibrary(item));
+            const artists = data.results || [];
+            console.log("[MusicApp] Found artists:", artists.length);
 
             this.lastSearchQuery = query;
-            this.lastSearchResults = results;
-            this.renderSearchResults(results);
+            this.lastSearchResults = artists;
+            this.renderArtistSearchResults(artists);
             this.saveUserState();
         } catch (err) {
             console.error("Search failed:", err);
             resultsContainer.innerHTML = `
-                <div class="glass-card p-6 text-center text-red-400">
-                    <p class="font-medium">Ocurrió un error al buscar en YouTube.</p>
-                    <p class="text-xs text-gray-500 mt-1">Asegúrate de que la conexión a Internet o VPN esté activa.</p>
+                <div class="glass-card p-6 text-center text-red-400 space-y-2">
+                    <p class="font-medium">Ocurrió un error al buscar artistas.</p>
+                    <p class="text-xs text-gray-400">${this.escapeHtml(err.message || 'Verifica la conexión a internet e inténtalo de nuevo.')}</p>
+                    <button onclick="window.app.performSearch(document.getElementById('search-input') ? document.getElementById('search-input').value : '')" class="btn-secondary text-xs py-1.5 px-3 mt-2">Reintentar</button>
                 </div>
             `;
         }
     }
 
     renderSearchResults(results) {
+        return this.renderArtistSearchResults(results);
+    }
+
+    renderArtistSearchResults(artists) {
         const container = document.getElementById('search-results');
-        const playBtn = document.getElementById('search-play-all-btn');
         if (!container) return;
 
-        if (results.length === 0) {
-            if (playBtn) {
-                playBtn.disabled = true;
-                playBtn.classList.add('opacity-40', 'cursor-not-allowed');
-            }
+        if (!artists || artists.length === 0) {
             container.innerHTML = `
                 <div class="glass-card p-8 text-center text-gray-400">
-                    <p class="text-lg font-medium">No se encontraron canciones nuevas.</p>
-                    <p class="text-sm mt-1 text-gray-500">Es posible que las canciones de esta búsqueda ya estén en tu biblioteca.</p>
+                    <p class="text-lg font-medium">No se encontraron artistas para "${this.escapeHtml(this.lastSearchQuery || '')}".</p>
+                    <p class="text-sm mt-1 text-gray-500">Prueba a buscar con otro nombre o término.</p>
                 </div>
             `;
             return;
         }
 
-        if (playBtn) {
-            playBtn.disabled = false;
-            playBtn.classList.remove('opacity-40', 'cursor-not-allowed');
+        container.innerHTML = `
+            <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+                ${artists.map((artist, idx) => {
+                    const pic = artist.picture || artist.picture_medium || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
+                    return `
+                    <div class="glass-card p-3 sm:p-4 flex flex-col items-center text-center group hover:border-purple-500/50 hover:bg-white/[0.05] transition duration-300 cursor-pointer active:scale-[0.98]"
+                         onclick="window.app.openArtistView(${artist.id})">
+                        <!-- Round Avatar -->
+                        <div class="relative w-24 h-24 sm:w-28 sm:h-28 rounded-full overflow-hidden mb-3 shadow-xl border-2 border-white/10 group-hover:border-purple-400/60 group-hover:scale-105 transition duration-300 bg-slate-950 flex-shrink-0">
+                            <img src="${pic}" 
+                                 alt="${this.escapeHtml(artist.name)}" 
+                                 class="w-full h-full object-cover" 
+                                 loading="lazy" />
+                        </div>
+
+                        <!-- Artist Info -->
+                        <h4 class="font-bold text-white text-sm sm:text-base leading-tight truncate w-full group-hover:text-purple-300 transition">
+                            ${this.escapeHtml(artist.name)}
+                        </h4>
+                        <div class="flex items-center gap-1.5 text-[11px] text-slate-400 mt-1 font-medium">
+                            <span>${artist.nb_album || 0} álbumes</span>
+                            <span>&bull;</span>
+                            <span>${this.formatFanCount(artist.nb_fan)} fans</span>
+                        </div>
+                    </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+    }
+
+    async openArtistView(artistId, activeTab = 'top') {
+        const artistsContainer = document.getElementById('search-artists-container');
+        const profileContainer = document.getElementById('artist-profile-view');
+        if (!profileContainer) return;
+
+        if (artistsContainer) artistsContainer.classList.add('hidden');
+        profileContainer.classList.remove('hidden');
+
+        profileContainer.innerHTML = `
+            <div class="glass-card p-10 sm:p-14 text-center flex flex-col items-center justify-center space-y-4 my-2">
+                <div class="relative w-14 h-14 sm:w-16 sm:h-16 flex items-center justify-center">
+                    <div class="absolute inset-0 rounded-full border-4 border-purple-500/20 border-t-purple-500 border-r-pink-500 animate-spin"></div>
+                </div>
+                <p class="text-sm font-semibold text-purple-200">Cargando discografía del artista...</p>
+            </div>
+        `;
+
+        try {
+            const res = await this.customFetch(`/api/music/artist/${artistId}`, {}, 15000);
+            if (!res.ok) throw new Error("Error al obtener datos del artista");
+            const data = await res.json();
+            this.currentArtistData = data;
+            this.currentArtistTab = activeTab;
+            this.renderArtistProfile(data);
+            this.saveUserState();
+        } catch (err) {
+            console.error("Failed to load artist view:", err);
+            profileContainer.innerHTML = `
+                <div class="glass-card p-6 text-center text-red-400 space-y-3">
+                    <p class="font-medium">No se pudo cargar la discografía del artista.</p>
+                    <button onclick="window.app.backToArtistSearch()" class="btn-secondary text-xs py-1.5 px-3">Volver a resultados</button>
+                </div>
+            `;
+        }
+    }
+
+    backToArtistSearch() {
+        const artistsContainer = document.getElementById('search-artists-container');
+        const profileContainer = document.getElementById('artist-profile-view');
+        if (profileContainer) profileContainer.classList.add('hidden');
+        if (artistsContainer) artistsContainer.classList.remove('hidden');
+        this.currentArtistData = null;
+        this.saveUserState();
+    }
+
+    setArtistTab(tab) {
+        this.currentArtistTab = tab;
+        if (this.currentArtistData) {
+            this.renderArtistProfile(this.currentArtistData);
+        }
+    }
+
+    renderArtistProfile(data) {
+        const container = document.getElementById('artist-profile-view');
+        if (!container || !data || !data.artist) return;
+
+        const artist = data.artist;
+        const topTracks = data.top_tracks || [];
+        const albums = data.albums || [];
+        const singlesEps = data.singles_eps || [];
+        const currentTab = this.currentArtistTab || 'top';
+        const artistPic = artist.picture_xl || artist.picture || artist.picture_medium || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
+
+        let tabContentHtml = '';
+
+        if (currentTab === 'top') {
+            if (topTracks.length === 0) {
+                tabContentHtml = `
+                    <div class="glass-card p-8 text-center text-slate-400">
+                        <p class="font-medium">No hay temas destacados disponibles.</p>
+                    </div>
+                `;
+            } else {
+                tabContentHtml = `
+                    <div class="space-y-2">
+                        <div class="flex items-center justify-between px-2 py-1">
+                            <span class="text-xs font-semibold text-slate-400 uppercase tracking-wider">Top ${topTracks.length} Canciones Populares</span>
+                        </div>
+                        <div class="space-y-2">
+                            ${topTracks.map((track, idx) => {
+                                const cover = track.cover || track.cover_medium || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
+                                return `
+                                <div class="glass-card p-2.5 sm:p-3 flex items-center justify-between gap-3 group hover:border-purple-500/40 hover:bg-white/[0.04] transition duration-200 cursor-pointer active:scale-[0.99]"
+                                     onclick="window.app.openDeezerSongModal(${idx})">
+                                    <!-- Left: Rank + Cover + Info -->
+                                    <div class="flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1">
+                                        <span class="text-xs font-mono font-bold text-slate-500 w-5 text-center flex-shrink-0">${idx + 1}</span>
+                                        <div class="relative w-11 h-11 sm:w-12 sm:h-12 rounded-xl overflow-hidden flex-shrink-0 bg-slate-950 shadow border border-white/5">
+                                            <img src="${cover}" alt="${this.escapeHtml(track.title)}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" loading="lazy" />
+                                        </div>
+                                        <div class="min-w-0 flex-1">
+                                            <h4 class="font-semibold text-white text-xs sm:text-sm leading-snug truncate group-hover:text-purple-300 transition">
+                                                ${this.escapeHtml(track.title)}
+                                            </h4>
+                                            <p class="text-[11px] text-slate-400 truncate mt-0.5">
+                                                ${this.escapeHtml(track.album || artist.name)}
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <!-- Right: Duration & Chevron -->
+                                    <div class="flex items-center gap-2 flex-shrink-0 text-slate-400">
+                                        <span class="text-[11px] font-mono">${track.duration_string || ''}</span>
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-slate-500 group-hover:text-purple-400 transition" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <polyline points="9 18 15 12 9 6"/>
+                                        </svg>
+                                    </div>
+                                </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+        } else if (currentTab === 'albums') {
+            if (albums.length === 0) {
+                tabContentHtml = `
+                    <div class="glass-card p-8 text-center text-slate-400">
+                        <p class="font-medium">No se encontraron álbumes de estudio.</p>
+                    </div>
+                `;
+            } else {
+                tabContentHtml = `
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+                        ${albums.map((album) => {
+                            const cover = album.cover_xl || album.cover || album.cover_medium || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
+                            return `
+                            <div class="glass-card p-3 sm:p-3.5 flex flex-col group hover:border-purple-500/50 hover:bg-white/[0.05] transition duration-300 cursor-pointer active:scale-[0.98]"
+                                 onclick="window.app.openAlbumModal(${album.id})">
+                                <div class="relative aspect-square w-full rounded-xl overflow-hidden mb-2.5 shadow-lg border border-white/10 group-hover:scale-102 transition duration-300 bg-slate-950">
+                                    <img src="${cover}" alt="${this.escapeHtml(album.title)}" class="w-full h-full object-cover" loading="lazy" />
+                                    ${album.year ? `<span class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/80 text-[10px] font-mono text-white/90">${album.year}</span>` : ''}
+                                </div>
+                                <h4 class="font-bold text-white text-xs sm:text-sm leading-snug truncate group-hover:text-purple-300 transition">
+                                    ${this.escapeHtml(album.title)}
+                                </h4>
+                                <div class="flex items-center justify-between text-[11px] text-slate-400 mt-1">
+                                    <span class="capitalize text-purple-300/80 font-medium">Álbum</span>
+                                    <span>${album.year || ''}</span>
+                                </div>
+                            </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            }
+        } else if (currentTab === 'singles') {
+            if (singlesEps.length === 0) {
+                tabContentHtml = `
+                    <div class="glass-card p-8 text-center text-slate-400">
+                        <p class="font-medium">No se encontraron singles o EPs.</p>
+                    </div>
+                `;
+            } else {
+                tabContentHtml = `
+                    <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+                        ${singlesEps.map((item) => {
+                            const cover = item.cover_xl || item.cover || item.cover_medium || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300';
+                            return `
+                            <div class="glass-card p-3 sm:p-3.5 flex flex-col group hover:border-purple-500/50 hover:bg-white/[0.05] transition duration-300 cursor-pointer active:scale-[0.98]"
+                                 onclick="window.app.openAlbumModal(${item.id})">
+                                <div class="relative aspect-square w-full rounded-xl overflow-hidden mb-2.5 shadow-lg border border-white/10 group-hover:scale-102 transition duration-300 bg-slate-950">
+                                    <img src="${cover}" alt="${this.escapeHtml(item.title)}" class="w-full h-full object-cover" loading="lazy" />
+                                    ${item.year ? `<span class="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/80 text-[10px] font-mono text-white/90">${item.year}</span>` : ''}
+                                </div>
+                                <h4 class="font-bold text-white text-xs sm:text-sm leading-snug truncate group-hover:text-purple-300 transition">
+                                    ${this.escapeHtml(item.title)}
+                                </h4>
+                                <div class="flex items-center justify-between text-[11px] text-slate-400 mt-1">
+                                    <span class="uppercase text-purple-300/80 font-medium">${item.record_type || 'Single'}</span>
+                                    <span>${item.year || ''}</span>
+                                </div>
+                            </div>
+                            `;
+                        }).join('')}
+                    </div>
+                `;
+            }
         }
 
-        container.innerHTML = results.map(item => `
-            <div class="glass-card p-3 flex items-center gap-3 group hover:border-purple-500/40 transition"
-                 onmouseenter="window.app.preloadYtTrack('${item.id}')"
-                 ontouchstart="window.app.preloadYtTrack('${item.id}')">
-                <!-- Small Left Thumbnail -->
-                <div class="relative w-14 h-14 sm:w-36 sm:h-24 rounded-lg overflow-hidden flex-shrink-0 bg-slate-950">
-                    <img src="${item.thumbnail || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=300'}" 
-                         alt="${this.escapeHtml(item.title)}" 
-                         class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-                         loading="lazy" />
-                    <span class="absolute bottom-0.5 right-0.5 px-1 py-0.2 bg-black/80 text-[9px] font-mono text-white rounded sm:text-[10px]">
-                        ${item.duration_string}
-                    </span>
+        container.innerHTML = `
+            <!-- Top Hero Banner with Back Button -->
+            <div class="glass-card p-4 sm:p-6 relative overflow-hidden flex flex-col sm:flex-row items-center sm:items-start gap-4 sm:gap-6 border-purple-500/20">
+                <!-- Back Button -->
+                <button onclick="window.app.backToArtistSearch()" class="absolute top-3 left-3 sm:top-4 sm:left-4 z-10 btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="15 18 9 12 15 6"/>
+                    </svg>
+                    <span>Artistas</span>
+                </button>
+
+                <!-- Artist Avatar -->
+                <div class="relative w-24 h-24 sm:w-28 sm:h-28 rounded-full overflow-hidden shadow-2xl border-2 border-purple-400/50 flex-shrink-0 mt-8 sm:mt-0 bg-slate-950">
+                    <img src="${artistPic}" alt="${this.escapeHtml(artist.name)}" class="w-full h-full object-cover" />
                 </div>
 
-                <!-- Center Title & Channel Meta -->
-                <div class="flex-1 min-w-0">
-                    <h3 class="font-semibold text-white text-xs sm:text-base line-clamp-2 sm:line-clamp-1 group-hover:text-purple-300 transition">
-                        ${this.escapeHtml(item.title)}
-                    </h3>
-                    <p class="text-[11px] sm:text-sm text-gray-400 mt-0.5 truncate font-medium">
-                        ${this.escapeHtml(item.channel)}
-                    </p>
-                </div>
-
-                <!-- Right Action Buttons (Stacked vertically on mobile) -->
-                <div class="flex flex-col sm:flex-row items-end sm:items-center justify-center gap-1 sm:gap-1.5 flex-shrink-0">
-                    <button onclick="window.app.playPreviewTrack('${item.id}', '${this.escapeJs(item.title)}', '${this.escapeJs(item.channel)}', '${item.thumbnail}')"
-                            class="w-full sm:w-auto bg-slate-800 hover:bg-slate-700 text-purple-300 border border-purple-500/30 hover:border-purple-400 text-[10px] sm:text-xs py-0.5 px-2 sm:py-1.5 sm:px-3 flex items-center justify-center gap-1 rounded-lg sm:rounded-xl transition shadow min-h-[22px]"
-                            title="Escuchar sin descargar">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 fill-current text-purple-400 flex-shrink-0" viewBox="0 0 24 24">
-                            <polygon points="5 3 19 12 5 21 5 3"/>
-                        </svg>
-                        <span class="hidden sm:inline font-medium">Escuchar</span>
-                        <span class="sm:hidden font-medium">Oír</span>
-                    </button>
-                    <button onclick="window.app.triggerDownload('${item.url}', '${this.escapeJs(item.title)}', '${item.id}', this)"
-                            class="w-full sm:w-auto btn-primary text-[10px] sm:text-xs py-0.5 px-2 sm:py-1.5 sm:px-3 flex items-center justify-center gap-1 min-h-[22px]">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                            <polyline points="7 10 12 15 17 10"/>
-                            <line x1="12" y1="15" x2="12" y2="3"/>
-                        </svg>
-                        <span class="hidden sm:inline">Descargar</span>
-                        <span class="sm:hidden">MP3</span>
-                    </button>
+                <!-- Artist Details -->
+                <div class="flex-1 text-center sm:text-left min-w-0 space-y-1">
+                    <span class="px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-300 border border-purple-500/30 inline-block">Artista Oficial</span>
+                    <h2 class="text-xl sm:text-3xl font-extrabold text-white leading-tight truncate">${this.escapeHtml(artist.name)}</h2>
+                    <div class="flex flex-wrap items-center justify-center sm:justify-start gap-2 pt-1 text-xs text-slate-300">
+                        <span class="px-2.5 py-0.5 rounded-full bg-slate-800/80 border border-white/5 font-medium">${artist.nb_album || 0} lanzamientos</span>
+                        <span class="px-2.5 py-0.5 rounded-full bg-slate-800/80 border border-white/5 font-medium">${this.formatFanCount(artist.nb_fan)} fans</span>
+                    </div>
                 </div>
             </div>
-        `).join('');
+
+            <!-- Sub-Navigation Tabs Bar -->
+            <div class="flex items-center gap-2 border-b border-white/10 pb-2 overflow-x-auto custom-scrollbar">
+                <button onclick="window.app.setArtistTab('top')" 
+                        class="px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${currentTab === 'top' ? 'bg-purple-600 text-white shadow-lg' : 'bg-slate-900/80 text-slate-400 hover:text-white'}">
+                    <span>🔥 Éxitos (${topTracks.length})</span>
+                </button>
+                <button onclick="window.app.setArtistTab('albums')" 
+                        class="px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${currentTab === 'albums' ? 'bg-purple-600 text-white shadow-lg' : 'bg-slate-900/80 text-slate-400 hover:text-white'}">
+                    <span>💿 Álbumes (${albums.length})</span>
+                </button>
+                <button onclick="window.app.setArtistTab('singles')" 
+                        class="px-3.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition ${currentTab === 'singles' ? 'bg-purple-600 text-white shadow-lg' : 'bg-slate-900/80 text-slate-400 hover:text-white'}">
+                    <span>🎵 Singles y EPs (${singlesEps.length})</span>
+                </button>
+            </div>
+
+            <!-- Tab Dynamic Content -->
+            <div>
+                ${tabContentHtml}
+            </div>
+        `;
     }
 
-    preloadYtTrack(id) {
-        if (!id) return;
-        if (!this._preloadedYtSet) this._preloadedYtSet = new Set();
-        if (this._preloadedYtSet.has(id)) return;
-        this._preloadedYtSet.add(id);
+    async openAlbumModal(albumId) {
+        const modal = document.getElementById('modal-album-detail');
+        const tracklistContainer = document.getElementById('album-modal-tracklist');
+        if (!modal || !tracklistContainer) return;
 
-        fetch(`/api/preload_yt?v=${encodeURIComponent(id)}`).catch(() => {});
+        modal.classList.remove('hidden');
+        tracklistContainer.innerHTML = `
+            <div class="p-8 text-center flex flex-col items-center justify-center space-y-3">
+                <div class="w-10 h-10 rounded-full border-2 border-purple-500/20 border-t-purple-500 animate-spin"></div>
+                <p class="text-xs text-purple-200">Cargando canciones del álbum...</p>
+            </div>
+        `;
+
+        try {
+            const res = await this.customFetch(`/api/music/album/${albumId}`, {}, 15000);
+            if (!res.ok) throw new Error("Error al obtener detalles del álbum");
+            const data = await res.json();
+            this.currentAlbumData = data;
+
+            // Populate header elements
+            const coverEl = document.getElementById('album-modal-cover');
+            const titleEl = document.getElementById('album-modal-title');
+            const artistEl = document.getElementById('album-modal-artist');
+            const metaEl = document.getElementById('album-modal-meta');
+            const badgeEl = document.getElementById('album-modal-badge');
+
+            if (coverEl) coverEl.src = data.cover_xl || data.cover || data.cover_medium || '';
+            if (titleEl) titleEl.textContent = data.title || 'Álbum';
+            if (artistEl) artistEl.textContent = data.artist || '';
+            if (badgeEl) badgeEl.textContent = data.record_type || 'Álbum';
+            if (metaEl) {
+                metaEl.textContent = `${data.year || ''} • ${data.nb_tracks || (data.tracks ? data.tracks.length : 0)} canciones • ${data.duration_string || ''} ${data.label ? '• ' + data.label : ''}`;
+            }
+
+            // Populate tracklist
+            const tracks = data.tracks || [];
+            if (tracks.length === 0) {
+                tracklistContainer.innerHTML = `
+                    <div class="p-6 text-center text-slate-400 text-xs">
+                        No se encontraron pistas para este álbum.
+                    </div>
+                `;
+                return;
+            }
+
+            tracklistContainer.innerHTML = tracks.map((track, idx) => {
+                return `
+                <div class="glass-card p-2.5 sm:p-3 flex items-center justify-between gap-3 group hover:border-purple-500/40 hover:bg-white/[0.04] transition duration-200 cursor-pointer active:scale-[0.99]"
+                     onclick="window.app.openDeezerAlbumSongModal(${idx})">
+                    <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                        <span class="text-xs font-mono font-bold text-slate-500 w-5 text-center flex-shrink-0">${track.track_position || (idx + 1)}</span>
+                        <div class="min-w-0 flex-1">
+                            <h4 class="font-semibold text-white text-xs sm:text-sm leading-snug truncate group-hover:text-purple-300 transition">
+                                ${this.escapeHtml(track.title)}
+                            </h4>
+                            <p class="text-[11px] text-slate-400 truncate mt-0.5">
+                                ${this.escapeHtml(track.artist || data.artist)}
+                            </p>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-2 flex-shrink-0 text-slate-400">
+                        <span class="text-[11px] font-mono">${track.duration_string || ''}</span>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-500 group-hover:text-purple-400 transition" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="9 18 15 12 9 6"/>
+                        </svg>
+                    </div>
+                </div>
+                `;
+            }).join('');
+
+        } catch (err) {
+            console.error("Failed to open album modal:", err);
+            tracklistContainer.innerHTML = `
+                <div class="p-6 text-center text-red-400 text-xs">
+                    Error al cargar las pistas del álbum.
+                </div>
+            `;
+        }
     }
 
-    playPreviewTrack(id, title, channel, thumbnail) {
-        if (window.player) {
-            window.player.playPreviewTrack({
-                id: id,
-                title: title,
-                channel: channel,
-                thumbnail: thumbnail
+    closeAlbumModal() {
+        const modal = document.getElementById('modal-album-detail');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    async downloadDeezerTrack(track, btnElement = null) {
+        if (!track) return;
+        const origHtml = btnElement ? btnElement.innerHTML : null;
+        if (btnElement) {
+            btnElement.disabled = true;
+            btnElement.innerHTML = `
+                <div class="w-3 h-3 rounded-full border-2 border-white/30 border-t-white animate-spin"></div>
+                <span class="text-[11px] font-medium">Encolando...</span>
+            `;
+            btnElement.classList.add('opacity-80');
+        }
+
+        try {
+            const payload = {
+                title: track.title,
+                artist: track.artist,
+                album: track.album || '',
+                cover_url: track.cover_xl || track.cover || track.cover_medium || '',
+                year: track.year || ''
+            };
+            const res = await this.customFetch('/api/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
             });
-            this.showToast(`Previsualizando: ${title}`);
+            if (!res.ok) throw new Error("Error al iniciar descarga");
+            this.showToast(`Descarga añadida: ${track.artist} - ${track.title}`, 'success');
+
+            if (btnElement) {
+                btnElement.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-emerald-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span class="text-[11px] font-medium text-emerald-300">En cola</span>
+                `;
+                setTimeout(() => {
+                    if (btnElement) {
+                        btnElement.disabled = false;
+                        btnElement.classList.remove('opacity-80');
+                        btnElement.innerHTML = origHtml;
+                    }
+                }, 3000);
+            }
+
+            // Immediately poll downloads so badges and lists update in real-time
+            this.pollDownloads();
+        } catch (err) {
+            console.error("Download track failed:", err);
+            this.showToast(`Error al descargar: ${track.title}`, 'error');
+            if (btnElement) {
+                btnElement.disabled = false;
+                btnElement.classList.remove('opacity-80');
+                btnElement.innerHTML = origHtml;
+            }
         }
     }
 
-    playAllSearch() {
-        if (!this.lastSearchResults || this.lastSearchResults.length === 0) {
-            this.showToast("No hay canciones disponibles en los resultados de búsqueda");
-            return;
-        }
-
-        const tracks = this.lastSearchResults.map(item => ({
-            id: item.id,
-            title: item.title,
-            artist: item.channel || 'YouTube',
-            thumbnail: item.thumbnail,
-            duration_string: item.duration_string,
-            is_yt: true
-        }));
-
-        if (window.player) {
-            window.player.setPlaylist(tracks, 0);
-            this.showToast(`Reproduciendo resultados de búsqueda (${tracks.length} canciones)`);
+    downloadDeezerTrackFromTop(idx, btnElement = null) {
+        if (!this.currentArtistData || !this.currentArtistData.top_tracks) return;
+        const track = this.currentArtistData.top_tracks[idx];
+        if (track) {
+            this.downloadDeezerTrack(track, btnElement);
         }
     }
 
-    playAllTrending() {
-        if (!this.currentTrendingResults || this.currentTrendingResults.length === 0) {
-            this.showToast("No hay canciones disponibles en la lista de tendencias");
-            return;
+    downloadDeezerTrackFromAlbum(idx, btnElement = null) {
+        if (!this.currentAlbumData || !this.currentAlbumData.tracks) return;
+        const track = this.currentAlbumData.tracks[idx];
+        if (track) {
+            this.downloadDeezerTrack({
+                ...track,
+                artist: track.artist || this.currentAlbumData.artist,
+                album: this.currentAlbumData.title,
+                cover_xl: this.currentAlbumData.cover_xl || this.currentAlbumData.cover,
+                year: this.currentAlbumData.year
+            }, btnElement);
         }
+    }
 
-        let regionName = 'LOS40 / YouTube';
-        if (this.trendingRegion === 'los40') regionName = 'LOS40 España';
-        else if (this.trendingRegion === 'spotify_es') regionName = 'Spotify Top España';
-        else if (this.trendingRegion === 'spotify_global') regionName = 'Spotify Top Global';
-        else if (this.trendingRegion === 'es') regionName = 'YouTube España';
-        else if (this.trendingRegion === 'global') regionName = 'YouTube Global';
+    async downloadCurrentModalAlbum() {
+        if (!this.currentAlbumData) return;
+        const album = this.currentAlbumData;
+        try {
+            const res = await this.customFetch('/api/music/download_album', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ album_id: album.id })
+            });
+            if (!res.ok) throw new Error("Error al iniciar descarga del álbum");
+            const data = await res.json();
+            this.showToast(data.message || `Descargando álbum: ${album.title}`, 'success');
+            this.closeAlbumModal();
+        } catch (err) {
+            console.error("Download album failed:", err);
+            this.showToast(`Error al descargar álbum: ${album.title}`, 'error');
+        }
+    }
 
-        const tracks = this.currentTrendingResults.map(item => ({
-            id: item.id,
-            title: item.title,
-            artist: item.channel || regionName,
-            trending_source: regionName,
-            is_trending: true,
-            thumbnail: item.thumbnail,
-            duration_string: item.duration_string,
-            is_yt: true
-        }));
+    playDeezerPreview(idx) {
+        this.openDeezerSongModal(idx);
+    }
 
-        if (window.player) {
-            window.player.setPlaylist(tracks, 0);
-            this.showToast(`Reproduciendo lista de tendencias (${tracks.length} canciones)`);
+    playAlbumTrackPreview(idx) {
+        this.openDeezerAlbumSongModal(idx);
+    }
+
+    openDeezerSongModal(idx) {
+        if (!this.currentArtistData || !this.currentArtistData.top_tracks) return;
+        const track = this.currentArtistData.top_tracks[idx];
+        if (track) {
+            this.selectedModalTrack = track;
+            this.selectedModalTrackRank = idx + 1;
+            this.selectedModalTrackContext = 'deezer_top';
+            this.openSongModal(track, 'deezer_top');
+        }
+    }
+
+    openDeezerAlbumSongModal(idx) {
+        if (!this.currentAlbumData || !this.currentAlbumData.tracks) return;
+        const track = this.currentAlbumData.tracks[idx];
+        if (track) {
+            this.selectedModalTrack = {
+                ...track,
+                artist: track.artist || this.currentAlbumData.artist,
+                album: this.currentAlbumData.title,
+                cover: this.currentAlbumData.cover_xl || this.currentAlbumData.cover,
+                cover_xl: this.currentAlbumData.cover_xl || this.currentAlbumData.cover,
+                year: this.currentAlbumData.year
+            };
+            this.selectedModalTrackRank = idx + 1;
+            this.selectedModalTrackContext = 'deezer_album';
+            this.openSongModal(this.selectedModalTrack, 'deezer_album');
         }
     }
 
@@ -1016,7 +1485,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.12",
+            version: "1.4.27",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {
@@ -1201,54 +1670,45 @@ class MusicApp {
             } catch (e) {}
         }
 
-        container.innerHTML = tracks.map((track, i) => {
+        container.innerHTML = tracks.map((track, idx) => {
+            const { title, artist } = this.parseSongInfo(track);
+            const coverUrl = track.has_cover 
+                ? `/api/library/cover/${encodeURIComponent(track.filename)}` 
+                : 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="%238b5cf6" stroke-width="1.5"><rect width="18" height="18" x="3" y="3" rx="2" fill="%231e1b4b"/><circle cx="12" cy="12" r="4"/><polygon points="10 10 15 12 10 14 10 10"/></svg>';
             const isCached = offlineSet.has(track.filename);
+
             return `
-            <div class="glass-card p-3 flex items-center gap-3 group track-card hover:border-purple-500/40 transition">
-                <div class="relative w-12 h-12 rounded-lg overflow-hidden flex-shrink-0 bg-slate-900">
-                    <img src="${track.has_cover ? `/api/library/cover/${encodeURIComponent(track.filename)}` : 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="%238b5cf6" stroke-width="1.5"><rect width="18" height="18" x="3" y="3" rx="2" fill="%231e1b4b"/><circle cx="12" cy="12" r="4"/><polygon points="10 10 15 12 10 14 10 10"/></svg>'}"
-                         alt="${this.escapeHtml(track.title)}"
-                         class="w-full h-full object-cover" />
-                    <button onclick="window.app.playLibraryTrack(${i})" 
-                            class="absolute inset-0 bg-black/60 flex items-center justify-center opacity-0 group-hover:opacity-100 transition duration-200">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-6 h-6 text-purple-400 fill-current ml-0.5" viewBox="0 0 24 24">
-                            <polygon points="5 3 19 12 5 21 5 3"/>
-                        </svg>
-                    </button>
+            <div class="glass-card p-3 flex items-center gap-3.5 group hover:border-purple-500/40 hover:bg-white/[0.04] transition duration-200 cursor-pointer active:scale-[0.99]"
+                 onclick="window.app.openSongModalByContext('library', ${idx})">
+                <!-- Thumbnail -->
+                <div class="relative w-14 h-14 sm:w-16 sm:h-16 rounded-xl overflow-hidden flex-shrink-0 bg-slate-900 shadow-md border border-white/5">
+                    <img src="${coverUrl}" 
+                         alt="${this.escapeHtml(title)}" 
+                         class="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                         loading="lazy" />
+                    ${isCached ? `
+                        <span class="absolute top-1 right-1 p-0.5 bg-purple-600/90 rounded-full text-white shadow" title="Guardada en caché local">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-2.5 h-2.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                                <polyline points="20 6 9 17 4 12"/>
+                            </svg>
+                        </span>
+                    ` : ''}
+                    <span class="absolute bottom-0.5 right-0.5 px-1 py-0.2 bg-black/80 text-[9px] font-mono text-white/90 rounded">
+                        ${track.duration_string || ''}
+                    </span>
                 </div>
 
-                <div class="flex-1 min-w-0 cursor-pointer" onclick="window.app.playLibraryTrack(${i})">
-                    <h4 class="font-semibold text-white text-sm truncate group-hover:text-purple-300 transition">
-                        ${this.escapeHtml(track.title)}
-                    </h4>
-                    <div class="flex items-center gap-2 mt-0.5 flex-wrap">
-                        <p class="text-xs text-gray-400 truncate">${this.escapeHtml(track.artist)}</p>
-                        <span class="text-[9px] px-1.5 py-0.2 rounded bg-purple-950/70 text-purple-300 border border-purple-800/30 flex-shrink-0">👤 ${this.escapeHtml(track.downloaded_by || 'Comunidad')}</span>
-                    </div>
-                </div>
-
-                <div class="flex items-center gap-2 flex-shrink-0">
-                    <div class="text-right text-xs text-gray-500 font-mono hidden sm:block">
-                        <p>${track.duration_string}</p>
-                        <p class="text-[10px] text-gray-600">${track.size_formatted}</p>
-                    </div>
-
-                    <button onclick="window.app.openAddToPlaylistModal('${this.escapeJs(track.filename)}')" 
-                            class="p-2 text-gray-400 hover:text-purple-400 transition" title="Añadir a Lista">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-                        </svg>
-                    </button>
-
-                    <button onclick="window.app.deleteTrack('${this.escapeJs(track.filename)}')" 
-                            class="p-2 text-gray-500 hover:text-red-400 transition" title="Eliminar canción">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                        </svg>
-                    </button>
+                <!-- Right Title & Artist (1 line each) -->
+                <div class="flex-1 min-w-0 pr-1">
+                    <h3 class="font-semibold text-white text-sm sm:text-base leading-snug truncate group-hover:text-purple-300 transition">
+                        ${this.escapeHtml(title)}
+                    </h3>
+                    <p class="text-xs sm:text-sm text-gray-400 mt-0.5 truncate font-normal">
+                        ${this.escapeHtml(artist)}
+                    </p>
                 </div>
             </div>
-        `;
+            `;
         }).join('');
     }
 
@@ -1297,6 +1757,370 @@ class MusicApp {
             if (data.success) {
                 this.showNotification(`Canción eliminada`, 'success');
                 this.loadLibrary();
+            } else {
+                this.showNotification(`Error al eliminar`, 'error');
+            }
+        } catch (err) {
+            this.showNotification(`Error de conexión`, 'error');
+        }
+    }
+
+    // ==========================================
+    // STANDALONE PREVIEW PLAYER (Search Only)
+    // ==========================================
+
+    playStandalonePreview(previewUrl) {
+        if (!previewUrl) {
+            this.updateModalPreviewUI(false);
+            return;
+        }
+        if (!this.standalonePreview) {
+            this.standalonePreview = new Audio();
+        }
+        
+        try {
+            this.standalonePreview.pause();
+            this.standalonePreview.src = previewUrl;
+            this.standalonePreview.currentTime = 0;
+            this.standalonePreview.volume = 1.0;
+
+            this.standalonePreview.onplay = () => this.updateModalPreviewUI(true);
+            this.standalonePreview.onpause = () => this.updateModalPreviewUI(false);
+            this.standalonePreview.onended = () => this.updateModalPreviewUI(false);
+
+            this.updateModalPreviewUI(true);
+            this.standalonePreview.play().catch(err => {
+                console.debug("Standalone preview autoplay prevented:", err);
+                this.updateModalPreviewUI(false);
+            });
+        } catch (e) {
+            console.debug("Error starting preview:", e);
+            this.updateModalPreviewUI(false);
+        }
+    }
+
+    stopStandalonePreview() {
+        if (this.standalonePreview) {
+            try {
+                this.standalonePreview.pause();
+                this.standalonePreview.removeAttribute('src');
+                this.standalonePreview.load();
+            } catch (e) {}
+        }
+        this.updateModalPreviewUI(false);
+    }
+
+    toggleModalPreview() {
+        if (!this.standalonePreview) return;
+        if (this.standalonePreview.paused) {
+            if (this.selectedModalTrack && (this.selectedModalTrack.preview || this.selectedModalTrack.preview_url)) {
+                if (!this.standalonePreview.src || this.standalonePreview.src === window.location.href) {
+                    this.standalonePreview.src = this.selectedModalTrack.preview || this.selectedModalTrack.preview_url;
+                }
+                this.standalonePreview.play().catch(() => {});
+            }
+        } else {
+            this.standalonePreview.pause();
+        }
+    }
+
+    updateModalPreviewUI(isPlaying) {
+        const bar = document.getElementById('song-modal-preview-bar');
+        const btn = document.getElementById('song-modal-preview-toggle-btn');
+        const statusText = document.getElementById('song-modal-preview-text');
+        if (!bar) return;
+
+        const hasPreview = this.selectedModalTrack && (this.selectedModalTrack.preview || this.selectedModalTrack.preview_url);
+        const isSearchContext = (this.selectedModalTrackContext === 'deezer_top' || this.selectedModalTrackContext === 'deezer_album' || this.selectedModalTrackContext === 'search');
+
+        if (!hasPreview || !isSearchContext) {
+            bar.classList.add('hidden');
+            return;
+        }
+
+        bar.classList.remove('hidden');
+        if (isPlaying) {
+            if (btn) btn.textContent = 'Pausar';
+            if (statusText) statusText.textContent = 'Preescucha oficial (30s) en reproducción';
+        } else {
+            if (btn) btn.textContent = 'Escuchar';
+            if (statusText) statusText.textContent = 'Preescucha oficial (30s)';
+        }
+    }
+
+    // ==========================================
+    // SONG DETAIL MODAL & ACTIONS
+    // ==========================================
+
+    async openSongModal(track, context = 'library') {
+        if (!track) return;
+        this.selectedModalTrack = track;
+        this.selectedModalTrackContext = context;
+
+        const isSearchContext = (context === 'deezer_top' || context === 'deezer_album' || context === 'search');
+
+        // Only in search: pause main player if active and launch standalone 30s preview outside main player
+        if (isSearchContext) {
+            if (window.player && window.player.isPlaying && window.player.audio && !window.player.audio.paused) {
+                this.wasMainPlayerPlayingBeforeModal = true;
+                window.player.audio.pause();
+                if (window.player.updatePlayButton) window.player.updatePlayButton();
+            } else {
+                this.wasMainPlayerPlayingBeforeModal = false;
+            }
+
+            if (track.preview || track.preview_url) {
+                this.playStandalonePreview(track.preview || track.preview_url);
+            } else {
+                this.stopStandalonePreview();
+            }
+        } else {
+            this.wasMainPlayerPlayingBeforeModal = false;
+            this.stopStandalonePreview();
+        }
+
+        const modal = document.getElementById('modal-song-detail');
+        if (!modal) return;
+
+        const coverEl = document.getElementById('song-modal-cover');
+        const titleEl = document.getElementById('song-modal-title');
+        const artistEl = document.getElementById('song-modal-artist');
+
+        const { title, artist } = this.parseSongInfo(track);
+
+        if (titleEl) titleEl.textContent = title;
+        if (artistEl) artistEl.textContent = artist;
+
+        const coverUrl = this.getTrackCoverUrl(track);
+        if (coverEl) {
+            coverEl.src = coverUrl;
+            coverEl.alt = title;
+        }
+
+        await this.updateSongModalButtonsState();
+        modal.classList.remove('hidden');
+    }
+
+    openSongModalByContext(context, index) {
+        if (context === 'trending') {
+            const item = this.currentTrendingResults ? this.currentTrendingResults[index] : null;
+            if (item) this.openSongModal(item, 'trending');
+        } else if (context === 'search') {
+            const item = this.lastSearchResults ? this.lastSearchResults[index] : null;
+            if (item) this.openSongModal(item, 'search');
+        } else if (context === 'library') {
+            const tracks = this.currentFilteredLibraryTracks || this.libraryTracks;
+            const item = tracks ? tracks[index] : null;
+            if (item) this.openSongModal(item, 'library');
+        }
+    }
+
+    closeSongModal() {
+        this.stopStandalonePreview();
+
+        // If main player was paused specifically because modal opened in search, resume it now
+        if (this.wasMainPlayerPlayingBeforeModal) {
+            this.wasMainPlayerPlayingBeforeModal = false;
+            if (window.player && window.player.audio && window.player.playlist && window.player.playlist.length > 0) {
+                window.player.audio.play().then(() => {
+                    window.player.isPlaying = true;
+                    if (window.player.updatePlayButton) window.player.updatePlayButton();
+                }).catch(() => {});
+            }
+        }
+
+        const modal = document.getElementById('modal-song-detail');
+        if (modal) modal.classList.add('hidden');
+        this.selectedModalTrack = null;
+        this.selectedModalTrackContext = null;
+    }
+
+    async updateSongModalButtonsState() {
+        const track = this.selectedModalTrack;
+        if (!track) return;
+
+        const btnAddPlaylist = document.getElementById('song-modal-btn-add-playlist');
+        const btnLib = document.getElementById('song-modal-btn-library-action');
+        const iconLib = document.getElementById('song-modal-lib-icon');
+        const textLib = document.getElementById('song-modal-lib-text');
+
+        const libTrack = this.getLibraryTrackForItem(track);
+        const inLibrary = !!libTrack || !!track.filename;
+
+        // "Añadir a lista" button: ONLY enabled if song is downloaded in library
+        if (btnAddPlaylist) {
+            if (inLibrary) {
+                btnAddPlaylist.disabled = false;
+                btnAddPlaylist.classList.remove('opacity-40', 'cursor-not-allowed', 'pointer-events-none');
+                btnAddPlaylist.title = 'Añadir canción a una de tus listas';
+            } else {
+                btnAddPlaylist.disabled = true;
+                btnAddPlaylist.classList.add('opacity-40', 'cursor-not-allowed', 'pointer-events-none');
+                btnAddPlaylist.title = 'Descarga primero la canción a la biblioteca para poder añadirla a una lista';
+            }
+        }
+
+        // Single Dynamic Download / Delete button
+        if (btnLib && iconLib && textLib) {
+            if (inLibrary) {
+                // Show "Eliminar" with red accent and trash icon
+                btnLib.className = 'btn-secondary text-[11px] sm:text-xs py-2 px-1 sm:px-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 font-medium text-red-400 border-red-500/30 hover:bg-red-950/40 hover:border-red-500/50 min-h-[42px] transition';
+                btnLib.title = 'Eliminar canción permanentemente de la biblioteca';
+                iconLib.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-red-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                    </svg>
+                `;
+                textLib.textContent = 'Eliminar';
+            } else {
+                // Show "Descargar" with amber accent and download icon
+                btnLib.className = 'btn-secondary text-[11px] sm:text-xs py-2 px-1 sm:px-2 flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-1.5 font-medium text-amber-300 hover:text-white border-amber-500/30 hover:border-amber-400 min-h-[42px] transition';
+                btnLib.title = 'Descargar canción a la biblioteca';
+                iconLib.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-amber-400 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                `;
+                textLib.textContent = 'Descargar';
+            }
+        }
+    }
+
+    modalToggleLibraryAction() {
+        const track = this.selectedModalTrack;
+        if (!track) return;
+
+        const libTrack = this.getLibraryTrackForItem(track);
+        const inLibrary = !!libTrack || !!track.filename;
+
+        if (inLibrary) {
+            this.modalDeleteFromLibrary();
+        } else {
+            this.modalDownloadTrack();
+        }
+    }
+
+    modalPlayNow() {
+        const track = this.selectedModalTrack;
+        this.stopStandalonePreview();
+        this.wasMainPlayerPlayingBeforeModal = false;
+        this.closeSongModal();
+        if (!track) return;
+        const playerTrack = this.toStandardPlayerTrack(track);
+        if (window.player && playerTrack) {
+            window.player.playNowWithResume(playerTrack);
+            this.showToast(`Reproduciendo ahora: ${playerTrack.title}`);
+        }
+    }
+
+    modalPlayNext() {
+        const track = this.selectedModalTrack;
+        this.stopStandalonePreview();
+        this.wasMainPlayerPlayingBeforeModal = false;
+        this.closeSongModal();
+        if (!track) return;
+        const playerTrack = this.toStandardPlayerTrack(track);
+        if (window.player && playerTrack) {
+            const wasPausedOrEmpty = !window.player.isPlaying || (window.player.audio && window.player.audio.paused) || window.player.playlist.length === 0 || window.player.currentIndex === -1;
+            window.player.playNextInQueue(playerTrack);
+            if (wasPausedOrEmpty) {
+                this.showToast(`Reproduciendo inmediatamente: ${playerTrack.title}`);
+            } else {
+                this.showToast(`Se reproducirá a continuación: ${playerTrack.title}`);
+            }
+        }
+    }
+
+    modalAddToPlaylist() {
+        const track = this.selectedModalTrack;
+        this.closeSongModal();
+        if (!track) return;
+
+        const libTrack = this.getLibraryTrackForItem(track);
+        const filename = libTrack ? libTrack.filename : track.filename;
+
+        if (filename) {
+            this.openAddToPlaylistModal(filename);
+        } else {
+            this.showToast('Descarga primero la canción a la biblioteca para poder añadirla a tus listas', 'warning');
+        }
+    }
+
+    async modalDownloadTrack() {
+        const track = this.selectedModalTrack;
+        const context = this.selectedModalTrackContext;
+        this.closeSongModal();
+        if (!track) return;
+
+        const libTrack = this.getLibraryTrackForItem(track);
+        if (libTrack || track.filename) {
+            this.showToast('Esta canción ya está en tu biblioteca', 'info');
+            return;
+        }
+
+        if (track.preview || track.is_deezer || track.album || context === 'deezer_top' || context === 'deezer_album') {
+            await this.downloadDeezerTrack(track);
+            return;
+        }
+
+        await this.triggerDownload(track.url || (track.id ? `https://youtube.com/watch?v=${track.id}` : ''), track.title, track.id);
+    }
+
+    async modalDeleteFromCache() {
+        const track = this.selectedModalTrack;
+        if (!track || !this.storageManager) return;
+
+        const libTrack = this.getLibraryTrackForItem(track);
+        const trackKey = (libTrack ? libTrack.filename : null) || track.filename || track.id;
+        if (!trackKey) return;
+
+        // Close modal immediately and return to main app
+        this.closeSongModal();
+
+        try {
+            await this.storageManager.deleteOfflineTrack(trackKey);
+            this.showToast('Canción eliminada de la caché local', 'success');
+            if (this.currentTab === 'library') {
+                this.renderLibraryView(this.filterTracks(this.libraryTracks));
+            } else if (this.currentTab === 'storage') {
+                this.loadStorageView();
+            }
+        } catch (err) {
+            console.error("Error deleting from offline cache:", err);
+            this.showToast('Error al eliminar de la caché', 'error');
+        }
+    }
+
+    async modalDeleteFromLibrary() {
+        const track = this.selectedModalTrack;
+        if (!track) return;
+
+        const libTrack = this.getLibraryTrackForItem(track);
+        const filename = libTrack ? libTrack.filename : track.filename;
+
+        if (!filename) {
+            this.closeSongModal();
+            this.showToast('Esta canción no está en la biblioteca', 'warning');
+            return;
+        }
+
+        const trackTitle = track.title || filename;
+        // Close modal immediately
+        this.closeSongModal();
+
+        if (!confirm(`¿Deseas eliminar '${trackTitle}' de la biblioteca?`)) return;
+
+        try {
+            const res = await this.customFetch(`/api/library/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) {
+                this.showNotification(`Canción eliminada de la biblioteca`, 'success');
+                await this.loadLibrary();
+                if (this.currentTab === 'search' && this.lastSearchResults) {
+                    this.renderSearchResults(this.lastSearchResults);
+                } else if (this.currentTab === 'trending' && this.currentTrendingResults) {
+                    this.renderTrendingResults(this.currentTrendingResults);
+                }
             } else {
                 this.showNotification(`Error al eliminar`, 'error');
             }
@@ -1524,6 +2348,50 @@ class MusicApp {
             }
         } catch (err) {
             this.showNotification('Error de conexión', 'error');
+        }
+    }
+
+    async saveCurrentQueueAsPlaylist() {
+        if (!window.player || !window.player.playlist || window.player.playlist.length === 0) {
+            this.showToast('No hay canciones en la lista para guardar', 'warning');
+            return;
+        }
+
+        const name = prompt('Introduce el nombre para la nueva lista de reproducción:');
+        if (!name || !name.trim()) return;
+
+        try {
+            const createRes = await this.customFetch('/api/playlists', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name.trim(), description: 'Guardada desde pistas disponibles' })
+            });
+            const createData = await createRes.json();
+            if (!createData.success || !createData.playlist) {
+                this.showNotification(createData.detail || 'Error al crear la lista', 'error');
+                return;
+            }
+
+            const playlistId = createData.playlist.id;
+            // Get all library filenames from current playlist
+            const tracks = window.player.playlist.map(t => {
+                const libTrack = this.getLibraryTrackForItem(t);
+                return libTrack ? libTrack.filename : (t.filename || null);
+            }).filter(Boolean);
+
+            if (tracks.length > 0) {
+                await this.customFetch(`/api/playlists/${playlistId}/tracks`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tracks: tracks })
+                });
+            }
+
+            this.showToast(`Lista '${name.trim()}' guardada con ${tracks.length} canciones`, 'success');
+            await this.loadPlaylists();
+        } catch (err) {
+            console.error("Error saving queue as playlist:", err);
+            this.showNotification('Error al guardar la lista', 'error');
         }
     }
 
@@ -1800,15 +2668,15 @@ class MusicApp {
     }
 
     escapeHtml(str) {
-        if (!str) return '';
-        return str.replace(/[&<>"']/g, function(m) {
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/[&<>"']/g, function(m) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m];
         });
     }
 
     escapeJs(str) {
-        if (!str) return '';
-        return str.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        if (str === null || str === undefined) return '';
+        return String(str).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
     }
 
     async loadStorageView() {
