@@ -22,6 +22,9 @@ class MusicApp {
         this.standalonePreview = new Audio();
         this.wasMainPlayerPlayingBeforeModal = false;
         this.pollInterval = null;
+        this.artistCache = new Map();
+        this.albumCache = new Map();
+        this.searchCache = new Map();
         this.storageManager = new StorageManager(this);
         this.init();
     }
@@ -743,6 +746,16 @@ class MusicApp {
         if (artistsContainer) artistsContainer.classList.remove('hidden');
         if (!resultsContainer) return;
 
+        const cleanQ = query.toLowerCase().trim();
+        if (this.searchCache && this.searchCache.has(cleanQ)) {
+            const artists = this.searchCache.get(cleanQ);
+            this.lastSearchQuery = query;
+            this.lastSearchResults = artists;
+            this.renderArtistSearchResults(artists);
+            this.saveUserState();
+            return;
+        }
+
         resultsContainer.innerHTML = `
             <div class="glass-card p-10 sm:p-14 text-center flex flex-col items-center justify-center space-y-4 my-2">
                 <div class="relative w-14 h-14 sm:w-16 sm:h-16 flex items-center justify-center">
@@ -769,6 +782,7 @@ class MusicApp {
             const artists = data.results || [];
             console.log("[MusicApp] Found artists:", artists.length);
 
+            if (this.searchCache) this.searchCache.set(cleanQ, artists);
             this.lastSearchQuery = query;
             this.lastSearchResults = artists;
             this.renderArtistSearchResults(artists);
@@ -842,6 +856,15 @@ class MusicApp {
         if (artistsContainer) artistsContainer.classList.add('hidden');
         profileContainer.classList.remove('hidden');
 
+        if (this.artistCache && this.artistCache.has(artistId)) {
+            const data = this.artistCache.get(artistId);
+            this.currentArtistData = data;
+            this.currentArtistTab = activeTab;
+            this.renderArtistProfile(data);
+            this.saveUserState();
+            return;
+        }
+
         profileContainer.innerHTML = `
             <div class="glass-card p-10 sm:p-14 text-center flex flex-col items-center justify-center space-y-4 my-2">
                 <div class="relative w-14 h-14 sm:w-16 sm:h-16 flex items-center justify-center">
@@ -855,6 +878,7 @@ class MusicApp {
             const res = await this.customFetch(`/api/music/artist/${artistId}`, {}, 15000);
             if (!res.ok) throw new Error("Error al obtener datos del artista");
             const data = await res.json();
+            if (this.artistCache) this.artistCache.set(artistId, data);
             this.currentArtistData = data;
             this.currentArtistTab = activeTab;
             this.renderArtistProfile(data);
@@ -1070,6 +1094,14 @@ class MusicApp {
         if (!modal || !tracklistContainer) return;
 
         modal.classList.remove('hidden');
+
+        if (this.albumCache && this.albumCache.has(albumId)) {
+            const data = this.albumCache.get(albumId);
+            this.currentAlbumData = data;
+            this.renderAlbumModalContent(data);
+            return;
+        }
+
         tracklistContainer.innerHTML = `
             <div class="p-8 text-center flex flex-col items-center justify-center space-y-3">
                 <div class="w-10 h-10 rounded-full border-2 border-purple-500/20 border-t-purple-500 animate-spin"></div>
@@ -1081,60 +1113,9 @@ class MusicApp {
             const res = await this.customFetch(`/api/music/album/${albumId}`, {}, 15000);
             if (!res.ok) throw new Error("Error al obtener detalles del álbum");
             const data = await res.json();
+            if (this.albumCache) this.albumCache.set(albumId, data);
             this.currentAlbumData = data;
-
-            // Populate header elements
-            const coverEl = document.getElementById('album-modal-cover');
-            const titleEl = document.getElementById('album-modal-title');
-            const artistEl = document.getElementById('album-modal-artist');
-            const metaEl = document.getElementById('album-modal-meta');
-            const badgeEl = document.getElementById('album-modal-badge');
-
-            if (coverEl) coverEl.src = data.cover_xl || data.cover || data.cover_medium || '';
-            if (titleEl) titleEl.textContent = data.title || 'Álbum';
-            if (artistEl) artistEl.textContent = data.artist || '';
-            if (badgeEl) badgeEl.textContent = data.record_type || 'Álbum';
-            if (metaEl) {
-                metaEl.textContent = `${data.year || ''} • ${data.nb_tracks || (data.tracks ? data.tracks.length : 0)} canciones • ${data.duration_string || ''} ${data.label ? '• ' + data.label : ''}`;
-            }
-
-            // Populate tracklist
-            const tracks = data.tracks || [];
-            if (tracks.length === 0) {
-                tracklistContainer.innerHTML = `
-                    <div class="p-6 text-center text-slate-400 text-xs">
-                        No se encontraron pistas para este álbum.
-                    </div>
-                `;
-                return;
-            }
-
-            tracklistContainer.innerHTML = tracks.map((track, idx) => {
-                return `
-                <div class="glass-card p-2.5 sm:p-3 flex items-center justify-between gap-3 group hover:border-purple-500/40 hover:bg-white/[0.04] transition duration-200 cursor-pointer active:scale-[0.99]"
-                     onclick="window.app.openDeezerAlbumSongModal(${idx})">
-                    <div class="flex items-center gap-2.5 min-w-0 flex-1">
-                        <span class="text-xs font-mono font-bold text-slate-500 w-5 text-center flex-shrink-0">${track.track_position || (idx + 1)}</span>
-                        <div class="min-w-0 flex-1">
-                            <h4 class="font-semibold text-white text-xs sm:text-sm leading-snug truncate group-hover:text-purple-300 transition">
-                                ${this.escapeHtml(track.title)}
-                            </h4>
-                            <p class="text-[11px] text-slate-400 truncate mt-0.5">
-                                ${this.escapeHtml(track.artist || data.artist)}
-                            </p>
-                        </div>
-                    </div>
-
-                    <div class="flex items-center gap-2 flex-shrink-0 text-slate-400">
-                        <span class="text-[11px] font-mono">${track.duration_string || ''}</span>
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-500 group-hover:text-purple-400 transition" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="9 18 15 12 9 6"/>
-                        </svg>
-                    </div>
-                </div>
-                `;
-            }).join('');
-
+            this.renderAlbumModalContent(data);
         } catch (err) {
             console.error("Failed to open album modal:", err);
             tracklistContainer.innerHTML = `
@@ -1143,6 +1124,63 @@ class MusicApp {
                 </div>
             `;
         }
+    }
+
+    renderAlbumModalContent(data) {
+        const tracklistContainer = document.getElementById('album-modal-tracklist');
+        if (!tracklistContainer) return;
+
+        // Populate header elements
+        const coverEl = document.getElementById('album-modal-cover');
+        const titleEl = document.getElementById('album-modal-title');
+        const artistEl = document.getElementById('album-modal-artist');
+        const metaEl = document.getElementById('album-modal-meta');
+        const badgeEl = document.getElementById('album-modal-badge');
+
+        if (coverEl) coverEl.src = data.cover_xl || data.cover || data.cover_medium || '';
+        if (titleEl) titleEl.textContent = data.title || 'Álbum';
+        if (artistEl) artistEl.textContent = data.artist || '';
+        if (badgeEl) badgeEl.textContent = data.record_type || 'Álbum';
+        if (metaEl) {
+            metaEl.textContent = `${data.year || ''} • ${data.nb_tracks || (data.tracks ? data.tracks.length : 0)} canciones • ${data.duration_string || ''} ${data.label ? '• ' + data.label : ''}`;
+        }
+
+        // Populate tracklist
+        const tracks = data.tracks || [];
+        if (tracks.length === 0) {
+            tracklistContainer.innerHTML = `
+                <div class="p-6 text-center text-slate-400 text-xs">
+                    No se encontraron pistas para este álbum.
+                </div>
+            `;
+            return;
+        }
+
+        tracklistContainer.innerHTML = tracks.map((track, idx) => {
+            return `
+            <div class="glass-card p-2.5 sm:p-3 flex items-center justify-between gap-3 group hover:border-purple-500/40 hover:bg-white/[0.04] transition duration-200 cursor-pointer active:scale-[0.99]"
+                 onclick="window.app.openDeezerAlbumSongModal(${idx})">
+                <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                    <span class="text-xs font-mono font-bold text-slate-500 w-5 text-center flex-shrink-0">${track.track_position || (idx + 1)}</span>
+                    <div class="min-w-0 flex-1">
+                        <h4 class="font-semibold text-white text-xs sm:text-sm leading-snug truncate group-hover:text-purple-300 transition">
+                            ${this.escapeHtml(track.title)}
+                        </h4>
+                        <p class="text-[11px] text-slate-400 truncate mt-0.5">
+                            ${this.escapeHtml(track.artist || data.artist)}
+                        </p>
+                    </div>
+                </div>
+
+                <div class="flex items-center gap-2 flex-shrink-0 text-slate-400">
+                    <span class="text-[11px] font-mono">${track.duration_string || ''}</span>
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-slate-500 group-hover:text-purple-400 transition" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="9 18 15 12 9 6"/>
+                    </svg>
+                </div>
+            </div>
+            `;
+        }).join('');
     }
 
     closeAlbumModal() {
@@ -1485,7 +1523,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.28",
+            version: "1.4.29",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {

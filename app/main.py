@@ -75,7 +75,7 @@ logger = logging.getLogger("music_app")
 app = FastAPI(
     title="Music App API",
     description="Backend for Music Downloader & Cloud Player with Deezer Discovery & Multi-User Playlists",
-    version="1.4.28"
+    version="1.4.29"
 )
 
 # Startup event: Rclone mount watchdog background loop
@@ -225,6 +225,7 @@ async def ensure_yt_cache_downloading(safe_id: str, video_url: str):
                 "-o", str(tmp_file),
                 "-f", "bestaudio[ext=m4a]/bestaudio/best",
                 "--extractor-args", "youtube:player_client=android,web",
+                "--geo-bypass",
                 "--no-warnings",
                 video_url
             ]
@@ -310,8 +311,20 @@ async def api_preload_yt(v: str = Query(..., description="YouTube Video ID o URL
         m = re.search(r'(?:v=|\/)([a-zA-Z0-9_-]{11})', v_id)
         if m:
             v_id = m.group(1)
+
+    if not (v_id.startswith("http://") or v_id.startswith("https://")) and len(v_id) != 11:
+        raw_res = await search_youtube(f"{v_id} audio oficial", limit=1)
+        if not raw_res:
+            raw_res = await search_youtube(v_id, limit=1)
+        if raw_res and raw_res[0].get("id"):
+            v_id = raw_res[0]["id"]
+            video_url = f"https://www.youtube.com/watch?v={v_id}"
+        else:
+            return {"status": "not_found"}
+    else:
+        video_url = f"https://www.youtube.com/watch?v={v_id}" if len(v_id) == 11 else v
+
     safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', v_id)
-    video_url = f"https://www.youtube.com/watch?v={v_id}" if len(v_id) == 11 else v
     cache_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a"
     if cache_file.exists() and cache_file.stat().st_size > 100000:
         return {"status": "cached", "safe_id": safe_id}
@@ -367,7 +380,7 @@ async def api_stream_yt(
 
         # Wait up to 10s for tmp_file or cache_file to appear with initial bytes
         while not cache_file.exists() and not (tmp_file.exists() and tmp_file.stat().st_size > 0) and (time.time() - start_time) < 10.0:
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.02)
 
         target_file = cache_file if cache_file.exists() else tmp_file
 
@@ -382,7 +395,7 @@ async def api_stream_yt(
                     if curr_size > offset:
                         with open(target_file, "rb") as f:
                             f.seek(offset)
-                            chunk = f.read(min(curr_size - offset, 128 * 1024))
+                            chunk = f.read(min(curr_size - offset, 256 * 1024))
                             if chunk:
                                 offset += len(chunk)
                                 yield chunk
@@ -410,7 +423,7 @@ async def api_stream_yt(
                         pass
                 break
 
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(0.02)
 
     return StreamingResponse(
         stream_generator(),
@@ -918,11 +931,19 @@ async def api_library_cover(filename: str):
     cover_data = extract_cover_bytes(filename)
     if cover_data:
         image_bytes, mime_type = cover_data
-        return Response(content=image_bytes, media_type=mime_type)
+        return Response(
+            content=image_bytes,
+            media_type=mime_type,
+            headers={"Cache-Control": "public, max-age=604800, immutable"}
+        )
 
     # Default SVG cover placeholder fallback
     svg_placeholder = """<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" ry="2" fill="#1e1b4b"/><circle cx="12" cy="12" r="4"/><polygon points="10 10 15 12 10 14 10 10"/></svg>"""
-    return Response(content=svg_placeholder, media_type="image/svg+xml")
+    return Response(
+        content=svg_placeholder,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"}
+    )
 
 
 def make_safe_disposition(filename: str) -> str:
@@ -968,7 +989,8 @@ async def api_stream_audio(filename: str, request: Request):
             headers={
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(file_size),
-                "Content-Disposition": disposition_header
+                "Content-Disposition": disposition_header,
+                "Cache-Control": "public, max-age=86400"
             }
         )
 
@@ -995,7 +1017,7 @@ async def api_stream_audio(filename: str, request: Request):
             with open(filepath, mode="rb") as f:
                 f.seek(start_pos)
                 remaining = bytes_to_read
-                block_size = 64 * 1024  # 64 KB buffer
+                block_size = 128 * 1024  # 128 KB buffer
                 while remaining > 0:
                     read_count = min(block_size, remaining)
                     data = f.read(read_count)
@@ -1009,7 +1031,8 @@ async def api_stream_audio(filename: str, request: Request):
             "Accept-Ranges": "bytes",
             "Content-Length": str(chunk_size),
             "Content-Type": mime_type,
-            "Content-Disposition": disposition_header
+            "Content-Disposition": disposition_header,
+            "Cache-Control": "public, max-age=86400"
         }
         return StreamingResponse(iter_chunk(start, chunk_size), status_code=206, headers=headers)
 

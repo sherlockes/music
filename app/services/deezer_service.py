@@ -3,7 +3,7 @@ import json
 import logging
 import urllib.request
 import urllib.parse
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger("deezer_service")
 
@@ -22,8 +22,19 @@ def _format_duration(seconds: Optional[float]) -> str:
         return f"{hours:02d}:{minutes:02d}:{remaining_secs:02d}"
     return f"{minutes:02d}:{remaining_secs:02d}"
 
-async def _fetch_json(url: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
-    """Helper to fetch and parse JSON from Deezer API asynchronously."""
+import time
+
+_DEEZER_JSON_CACHE: Dict[str, Tuple[float, Any]] = {}
+DEEZER_CACHE_TTL = 900  # 15 minutes cache for Deezer metadata
+
+async def _fetch_json(url: str, timeout: int = 10, ttl: int = DEEZER_CACHE_TTL) -> Optional[Dict[str, Any]]:
+    """Helper to fetch and parse JSON from Deezer API asynchronously with in-memory TTL caching."""
+    now = time.time()
+    if url in _DEEZER_JSON_CACHE:
+        cached_time, cached_data = _DEEZER_JSON_CACHE[url]
+        if (now - cached_time) < ttl:
+            return cached_data
+
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     loop = asyncio.get_event_loop()
     def _do_fetch():
@@ -36,7 +47,16 @@ async def _fetch_json(url: str, timeout: int = 10) -> Optional[Dict[str, Any]]:
             logger.error(f"Deezer API request error for URL {url}: {e}")
         return None
 
-    return await loop.run_in_executor(None, _do_fetch)
+    data = await loop.run_in_executor(None, _do_fetch)
+    if data is not None:
+        _DEEZER_JSON_CACHE[url] = (now, data)
+        # Prevent unbound memory growth
+        if len(_DEEZER_JSON_CACHE) > 500:
+            oldest_keys = sorted(_DEEZER_JSON_CACHE.keys(), key=lambda k: _DEEZER_JSON_CACHE[k][0])[:100]
+            for k in oldest_keys:
+                _DEEZER_JSON_CACHE.pop(k, None)
+
+    return data
 
 async def search_artists(query: str, limit: int = 25) -> List[Dict[str, Any]]:
     """

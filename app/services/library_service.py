@@ -38,14 +38,26 @@ def format_duration(seconds: Optional[float]) -> str:
         return f"{hours:02d}:{minutes:02d}:{remaining_secs:02d}"
     return f"{minutes:02d}:{remaining_secs:02d}"
 
+import time
+
+_FILE_META_CACHE: Dict[str, Tuple[float, int, Dict[str, Any]]] = {}
+_COVER_CACHE: Dict[str, Tuple[float, Optional[Tuple[bytes, str]]]] = {}
+
 def get_track_metadata(filepath: Path) -> Dict[str, Any]:
     """
-    Extract metadata (title, artist, duration, cover) from an audio file.
+    Extract metadata (title, artist, duration, cover) from an audio file with mtime/size caching.
     """
     filename = filepath.name
     stat = filepath.stat()
     size_bytes = stat.st_size
-    mod_time = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
+    mtime = stat.st_mtime
+    mod_time = datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+
+    # Fast cache check based on (filename, mtime, size_bytes)
+    if filename in _FILE_META_CACHE:
+        cached_mtime, cached_size, cached_meta = _FILE_META_CACHE[filename]
+        if cached_mtime == mtime and cached_size == size_bytes:
+            return cached_meta
 
     # Default fallback values
     title = filepath.stem
@@ -105,7 +117,7 @@ def get_track_metadata(filepath: Path) -> Dict[str, Any]:
     from app.services.ytdlp_service import clean_song_metadata
     clean_title, clean_artist = clean_song_metadata(title, artist_raw=artist)
 
-    return {
+    meta = {
         "filename": filename,
         "title": clean_title,
         "artist": clean_artist,
@@ -118,7 +130,8 @@ def get_track_metadata(filepath: Path) -> Dict[str, Any]:
         "modified_at": mod_time
     }
 
-import time
+    _FILE_META_CACHE[filename] = (mtime, size_bytes, meta)
+    return meta
 
 _LIBRARY_CACHE = {"tracks": [], "last_scan": 0}
 CACHE_TTL = 15  # 15 seconds cache TTL
@@ -171,7 +184,7 @@ def get_library_files(force_refresh: bool = False) -> List[Dict[str, Any]]:
 
 def extract_cover_bytes(filename: str) -> Optional[Tuple[bytes, str]]:
     """
-    Extract embedded cover image from an audio file.
+    Extract embedded cover image from an audio file with in-memory caching.
     Returns (image_bytes, mime_type) or None if no cover image found.
     """
     filepath = MUSIC_DIR / filename
@@ -179,38 +192,52 @@ def extract_cover_bytes(filename: str) -> Optional[Tuple[bytes, str]]:
         return None
 
     try:
+        mtime = filepath.stat().st_mtime
+    except Exception:
+        mtime = 0.0
+
+    if filename in _COVER_CACHE:
+        cached_mtime, cached_res = _COVER_CACHE[filename]
+        if cached_mtime == mtime:
+            return cached_res
+
+    res = None
+    try:
         audio = mutagen.File(str(filepath))
-        if audio is None:
-            return None
+        if audio is not None:
+            # MP3 ID3 APIC frame
+            if hasattr(audio, 'tags') and isinstance(audio.tags, ID3):
+                for key in audio.tags.keys():
+                    if key.startswith('APIC'):
+                        apic = audio.tags[key]
+                        res = (apic.data, apic.mime)
+                        break
 
-        # MP3 ID3 APIC frame
-        if hasattr(audio, 'tags') and isinstance(audio.tags, ID3):
-            for key in audio.tags.keys():
-                if key.startswith('APIC'):
-                    apic = audio.tags[key]
-                    return apic.data, apic.mime
+            # M4A covr frame
+            elif isinstance(audio, MP4) and audio.tags:
+                covr = audio.tags.get('covr')
+                if covr and len(covr) > 0:
+                    image_data = covr[0]
+                    mime = "image/png" if image_data.startswith(b'\x89PNG') else "image/jpeg"
+                    res = (bytes(image_data), mime)
 
-        # M4A covr frame
-        elif isinstance(audio, MP4) and audio.tags:
-            covr = audio.tags.get('covr')
-            if covr and len(covr) > 0:
-                image_data = covr[0]
-                mime = "image/png" if image_data.startswith(b'\x89PNG') else "image/jpeg"
-                return bytes(image_data), mime
-
-        # FLAC pictures
-        elif isinstance(audio, FLAC) and audio.pictures:
-            pic = audio.pictures[0]
-            return pic.data, pic.mime
+            # FLAC pictures
+            elif isinstance(audio, FLAC) and audio.pictures:
+                pic = audio.pictures[0]
+                res = (pic.data, pic.mime)
 
     except Exception as e:
         logger.error(f"Failed to extract cover image from {filename}: {e}")
 
-    return None
+    _COVER_CACHE[filename] = (mtime, res)
+    return res
 
 def delete_track(filename: str) -> bool:
-    """Delete a track from MUSIC_DIR."""
+    """Delete a track from MUSIC_DIR and clear caches."""
     filepath = MUSIC_DIR / filename
+    _FILE_META_CACHE.pop(filename, None)
+    _COVER_CACHE.pop(filename, None)
+    invalidate_library_cache()
     if filepath.exists() and filepath.is_file():
         filepath.unlink()
         return True

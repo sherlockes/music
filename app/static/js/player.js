@@ -652,8 +652,8 @@ class AudioPlayer {
         if (!this.audio || !this.audio.duration || this.playlist.length === 0) return;
         const remaining = this.audio.duration - this.audio.currentTime;
 
-        // Trigger preloading when 5 seconds or less remain in current song
-        if (remaining > 0 && remaining <= 5 && !this.isPreloadingNext) {
+        // Trigger preloading when 10 seconds or less remain in current song for gapless transition
+        if (remaining > 0 && remaining <= 10 && !this.isPreloadingNext) {
             this.isPreloadingNext = true;
             let nextIdx = this.currentIndex + 1;
             if (this.isShuffle) {
