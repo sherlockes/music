@@ -1,4 +1,4 @@
-# 🎵 Music Cloud App (v1.4.27)
+# 🎵 Music Cloud App (v1.4.28)
 
 > **Buscador de Artistas y Discografía, Descargador de YouTube y Reproductor Cloud con Rclone & WireGuard VPN.**
 

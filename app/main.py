@@ -75,7 +75,7 @@ logger = logging.getLogger("music_app")
 app = FastAPI(
     title="Music App API",
     description="Backend for Music Downloader & Cloud Player with Deezer Discovery & Multi-User Playlists",
-    version="1.4.27"
+    version="1.4.28"
 )
 
 # Startup event: Rclone mount watchdog background loop

@@ -1485,7 +1485,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.27",
+            version: "1.4.28",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {
@@ -1861,9 +1861,10 @@ class MusicApp {
 
         // Only in search: pause main player if active and launch standalone 30s preview outside main player
         if (isSearchContext) {
-            if (window.player && window.player.isPlaying && window.player.audio && !window.player.audio.paused) {
+            if (window.player && window.player.audio && (!window.player.audio.paused || window.player.isPlaying) && window.player.playlist.length > 0 && window.player.currentIndex !== -1) {
                 this.wasMainPlayerPlayingBeforeModal = true;
                 window.player.audio.pause();
+                window.player.isPlaying = false;
                 if (window.player.updatePlayButton) window.player.updatePlayButton();
             } else {
                 this.wasMainPlayerPlayingBeforeModal = false;
@@ -1921,11 +1922,11 @@ class MusicApp {
         // If main player was paused specifically because modal opened in search, resume it now
         if (this.wasMainPlayerPlayingBeforeModal) {
             this.wasMainPlayerPlayingBeforeModal = false;
-            if (window.player && window.player.audio && window.player.playlist && window.player.playlist.length > 0) {
+            if (window.player && window.player.audio && window.player.playlist && window.player.playlist.length > 0 && window.player.currentIndex !== -1) {
                 window.player.audio.play().then(() => {
                     window.player.isPlaying = true;
                     if (window.player.updatePlayButton) window.player.updatePlayButton();
-                }).catch(() => {});
+                }).catch(e => console.debug("Resume main player error:", e));
             }
         }
 
@@ -2015,18 +2016,23 @@ class MusicApp {
 
     modalPlayNext() {
         const track = this.selectedModalTrack;
-        this.stopStandalonePreview();
-        this.wasMainPlayerPlayingBeforeModal = false;
+        const wasPlayingBefore = this.wasMainPlayerPlayingBeforeModal;
         this.closeSongModal();
         if (!track) return;
         const playerTrack = this.toStandardPlayerTrack(track);
         if (window.player && playerTrack) {
-            const wasPausedOrEmpty = !window.player.isPlaying || (window.player.audio && window.player.audio.paused) || window.player.playlist.length === 0 || window.player.currentIndex === -1;
+            const isEmptyOrStopped = window.player.playlist.length === 0 || window.player.currentIndex === -1;
             window.player.playNextInQueue(playerTrack);
-            if (wasPausedOrEmpty) {
-                this.showToast(`Reproduciendo inmediatamente: ${playerTrack.title}`);
+            if (isEmptyOrStopped) {
+                this.showToast(`Reproduciendo ahora: ${playerTrack.title}`);
             } else {
                 this.showToast(`Se reproducirá a continuación: ${playerTrack.title}`);
+                if (wasPlayingBefore && window.player.audio && window.player.audio.paused && window.player.currentIndex !== -1) {
+                    window.player.audio.play().then(() => {
+                        window.player.isPlaying = true;
+                        if (window.player.updatePlayButton) window.player.updatePlayButton();
+                    }).catch(() => {});
+                }
             }
         }
     }
