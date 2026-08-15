@@ -75,7 +75,7 @@ logger = logging.getLogger("music_app")
 app = FastAPI(
     title="Music App API",
     description="Backend for Music Downloader & Cloud Player with Deezer Discovery & Multi-User Playlists",
-    version="1.4.29"
+    version="1.5.0"
 )
 
 # Startup event: Rclone mount watchdog background loop
@@ -337,7 +337,7 @@ async def api_stream_yt(
     v: str = Query(..., description="YouTube Video ID o URL")
 ):
     """
-    Stream live direct audio from YouTube using background worker + growing file stream.
+    Stream live direct audio from YouTube with full HTTP Range (206 Partial Content) support.
     Caches stream to /tmp/music_yt_cache for instant subsequent playback and offline save requests.
     """
     v_id = v.strip()
@@ -360,80 +360,45 @@ async def api_stream_yt(
 
     safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', v_id)
     cache_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a"
-    tmp_file = TEMP_YT_CACHE_DIR / f"{safe_id}.m4a.tmp"
 
     # 1. If completed cached file exists, return FileResponse instantly with Range support!
     if cache_file.exists() and cache_file.stat().st_size > 100000:
         return FileResponse(
             path=cache_file,
             media_type="audio/mp4",
-            headers={"Cache-Control": "public, max-age=86400"}
+            headers={"Cache-Control": "public, max-age=86400", "Accept-Ranges": "bytes"}
         )
 
     # 2. Ensure background download task is active
     await ensure_yt_cache_downloading(safe_id, video_url)
 
-    # 3. Stream from growing file (or completed cache file if completed during wait)
-    async def stream_generator():
-        offset = 0
-        start_time = time.time()
+    # 3. Wait up to 15s for cache_file to complete
+    start_time = time.time()
+    while (time.time() - start_time) < 15.0:
+        if cache_file.exists() and cache_file.stat().st_size > 100000:
+            return FileResponse(
+                path=cache_file,
+                media_type="audio/mp4",
+                headers={"Cache-Control": "public, max-age=86400", "Accept-Ranges": "bytes"}
+            )
+        task = ACTIVE_YT_TASKS.get(safe_id)
+        if task and task.done() and not cache_file.exists():
+            break
+        await asyncio.sleep(0.1)
 
-        # Wait up to 10s for tmp_file or cache_file to appear with initial bytes
-        while not cache_file.exists() and not (tmp_file.exists() and tmp_file.stat().st_size > 0) and (time.time() - start_time) < 10.0:
-            await asyncio.sleep(0.02)
+    if cache_file.exists() and cache_file.stat().st_size > 100000:
+        return FileResponse(
+            path=cache_file,
+            media_type="audio/mp4",
+            headers={"Cache-Control": "public, max-age=86400", "Accept-Ranges": "bytes"}
+        )
 
-        target_file = cache_file if cache_file.exists() else tmp_file
+    # 4. Fallback to direct stream URL
+    direct_url = await get_yt_stream_url(video_url)
+    if direct_url:
+        return RedirectResponse(url=direct_url, status_code=302)
 
-        while True:
-            # If target_file switched to cache_file (download finished)
-            if not target_file.exists() and cache_file.exists():
-                target_file = cache_file
-
-            if target_file.exists():
-                try:
-                    curr_size = target_file.stat().st_size
-                    if curr_size > offset:
-                        with open(target_file, "rb") as f:
-                            f.seek(offset)
-                            chunk = f.read(min(curr_size - offset, 256 * 1024))
-                            if chunk:
-                                offset += len(chunk)
-                                yield chunk
-                except Exception as e:
-                    logger.debug(f"[Stream Generator] File read error: {e}")
-
-            # Check if download job is complete
-            task = ACTIVE_YT_TASKS.get(safe_id)
-            is_active = task is not None and not task.done()
-
-            # End stream if download is done and no more bytes to read
-            if not is_active:
-                final_file = cache_file if cache_file.exists() else target_file
-                if final_file.exists():
-                    try:
-                        curr_size = final_file.stat().st_size
-                        if curr_size > offset:
-                            with open(final_file, "rb") as f:
-                                f.seek(offset)
-                                chunk = f.read()
-                                if chunk:
-                                    offset += len(chunk)
-                                    yield chunk
-                    except Exception:
-                        pass
-                break
-
-            await asyncio.sleep(0.02)
-
-    return StreamingResponse(
-        stream_generator(),
-        media_type="audio/mp4",
-        headers={
-            "Accept-Ranges": "none",
-            "Content-Type": "audio/mp4",
-            "Cache-Control": "no-cache"
-        }
-    )
+    raise HTTPException(status_code=500, detail="No se pudo obtener el stream de audio")
 
 
 

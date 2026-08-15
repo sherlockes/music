@@ -204,12 +204,12 @@ input[type="range"].range-slider::-webkit-slider-thumb:hover {
   -webkit-backdrop-filter: blur(20px);
   border-top: 1px solid var(--border-glass);
   box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.6);
-  padding: 0.5rem 0.75rem;
+  padding: 0.2rem 0.75rem 0.25rem;
 }
 
 @media (min-width: 768px) {
   .bottom-player {
-    padding: 0.6rem 1.5rem;
+    padding: 0.35rem 1.5rem;
   }
 }
 

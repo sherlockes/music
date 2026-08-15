@@ -376,6 +376,9 @@ class MusicApp {
     }
 
     switchTab(tabName, triggerLoad = true) {
+        if (tabName === 'rclone') {
+            tabName = 'storage';
+        }
         this.currentTab = tabName;
 
         // Update desktop & mobile active tab styling
@@ -403,10 +406,11 @@ class MusicApp {
                 this.loadTrending();
             } else if (tabName === 'playlists') {
                 this.loadPlaylists();
-            } else if (tabName === 'rclone' && window.rcloneMgr) {
-                window.rcloneMgr.fetchStatus();
             } else if (tabName === 'storage') {
                 this.loadStorageView();
+                if (window.rcloneMgr) {
+                    window.rcloneMgr.fetchStatus();
+                }
             }
         }
 
@@ -1482,12 +1486,6 @@ class MusicApp {
 
             this.updateUserFilterOptions();
             this.applyLibraryFilters();
-
-            if (window.player && window.player.playlist.length === 0) {
-                window.player.playlist = this.libraryTracks;
-                window.player.renderQueue();
-            }
-
             this.updateLibraryTrackCountBadge();
         } catch (err) {
             console.error("Failed to load library:", err);
@@ -1523,7 +1521,7 @@ class MusicApp {
 
         const exportData = {
             app: "MusicCloud",
-            version: "1.4.29",
+            version: "1.5.0",
             exported_at: new Date().toISOString(),
             total_tracks: this.libraryTracks.length,
             tracks: this.libraryTracks.map(t => {
@@ -1954,6 +1952,20 @@ class MusicApp {
         }
     }
 
+    openCurrentPlayerSongModal() {
+        if (!window.player || !window.player.playlist || window.player.playlist.length === 0 || window.player.currentIndex === -1) {
+            return;
+        }
+        const currentTrack = window.player.playlist[window.player.currentIndex];
+        if (!currentTrack) return;
+
+        // Enrich with library metadata if already downloaded in local library
+        const libTrack = this.getLibraryTrackForItem(currentTrack);
+        const modalTrack = libTrack ? { ...currentTrack, ...libTrack } : currentTrack;
+
+        this.openSongModal(modalTrack, 'player');
+    }
+
     closeSongModal() {
         this.stopStandalonePreview();
 
@@ -1972,6 +1984,15 @@ class MusicApp {
         if (modal) modal.classList.add('hidden');
         this.selectedModalTrack = null;
         this.selectedModalTrackContext = null;
+    }
+
+    closeQueueModal() {
+        if (window.player && typeof window.player.closeQueueModal === 'function') {
+            window.player.closeQueueModal();
+        } else {
+            const modal = document.getElementById('queue-drawer');
+            if (modal) modal.classList.add('hidden');
+        }
     }
 
     async updateSongModalButtonsState() {

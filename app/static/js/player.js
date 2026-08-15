@@ -4,16 +4,17 @@
 class AudioPlayer {
     constructor() {
         this.audio = new Audio();
+        this.audio.volume = 1.0;
         this.playlist = [];
         this.currentIndex = -1;
         this.isPlaying = false;
         this.isLoading = false;
+        this.isChangingTrack = false;
         this.isShuffle = false;
         this.isRepeat = false; // false = off, true = repeat current track
-        this.preloadedNextIndex = -1;
-        this.preloadedNextBlobUrl = null;
         this.isPreloadingNext = false;
-        this.interruptedState = null;
+        this.errorRetryCount = 0;
+        this.errorSkipTimer = null;
 
         // DOM elements
         this.initDOMElements();
@@ -36,6 +37,7 @@ class AudioPlayer {
         this.elMuteBtn = document.getElementById('player-mute-btn');
         this.elQueueToggleBtn = document.getElementById('player-queue-btn');
         this.elQueueDrawer = document.getElementById('queue-drawer');
+        this.elQueueCloseBtn = document.getElementById('queue-modal-close-btn');
         this.elQueueList = document.getElementById('queue-list');
         this.elBottomPlayer = document.getElementById('bottom-player');
 
@@ -70,7 +72,9 @@ class AudioPlayer {
         });
         this.audio.addEventListener('playing', () => {
             this.isLoading = false;
+            this.isChangingTrack = false;
             this.isPlaying = true;
+            this.errorRetryCount = 0;
             this.updatePlayButton();
             this.renderQueue();
         });
@@ -79,6 +83,10 @@ class AudioPlayer {
             this.updatePlayButton();
         });
         this.audio.addEventListener('pause', () => {
+            // Ignore internal pause during track transition/source change
+            if (this.isChangingTrack || this.isLoading) {
+                return;
+            }
             this.isLoading = false;
             this.isPlaying = false;
             this.updatePlayButton();
@@ -122,15 +130,45 @@ class AudioPlayer {
             });
         }
 
-        // Queue drawer toggle
-        if (this.elQueueToggleBtn && this.elQueueDrawer) {
-            this.elQueueToggleBtn.addEventListener('click', () => {
-                this.elQueueDrawer.classList.toggle('hidden');
+        // Cover click: open song detail modal
+        if (this.elCover) {
+            this.elCover.style.cursor = 'pointer';
+            this.elCover.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (window.app && typeof window.app.openCurrentPlayerSongModal === 'function') {
+                    window.app.openCurrentPlayerSongModal();
+                }
+            });
+        }
+
+        // Queue modal toggle & close
+        if (this.elQueueToggleBtn) {
+            this.elQueueToggleBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.toggleQueueModal();
+            });
+        }
+        if (this.elQueueCloseBtn) {
+            this.elQueueCloseBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.closeQueueModal();
+            });
+        }
+        if (this.elQueueDrawer) {
+            this.elQueueDrawer.addEventListener('click', (e) => {
+                if (e.target === this.elQueueDrawer) {
+                    this.closeQueueModal();
+                }
             });
         }
 
         // Keyboard Shortcuts
         document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.closeQueueModal();
+                return;
+            }
+
             // Ignore if typing in input/textarea
             if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
 
@@ -171,6 +209,7 @@ class AudioPlayer {
     async loadTrack(index, autoPlay = true) {
         if (index < 0 || index >= this.playlist.length) return;
 
+        this.isChangingTrack = true;
         this.currentIndex = index;
         const track = this.playlist[this.currentIndex];
         const trackKey = track.filename || track.id;
@@ -211,20 +250,11 @@ class AudioPlayer {
         let streamUrl = '';
         let isOfflineCache = false;
 
-        // Check if track was preloaded during 5s window
-        if (index === this.preloadedNextIndex && this.preloadedNextBlobUrl) {
-            streamUrl = this.preloadedNextBlobUrl;
-            isOfflineCache = true;
-            console.log(`[Preloader] Instant playback using preloaded Blob for track index ${index}!`);
-        }
-
         // Reset preloader state for next cycle
         this.isPreloadingNext = false;
-        this.preloadedNextIndex = -1;
-        this.preloadedNextBlobUrl = null;
 
         // Check if track is available in local IndexedDB offline storage
-        if (!streamUrl && window.app && window.app.storageManager && trackKey) {
+        if (window.app && window.app.storageManager && trackKey) {
             try {
                 const offlineItem = await window.app.storageManager.getOfflineTrack(trackKey);
                 if (offlineItem && offlineItem.blob) {
@@ -251,20 +281,22 @@ class AudioPlayer {
         this.audio.load();
 
         if (autoPlay) {
+            this.isLoading = true;
+            this.isPlaying = true;
+            this.updatePlayButton();
+
             const tryPlay = () => {
                 const playPromise = this.audio.play();
                 if (playPromise !== undefined) {
                     playPromise.then(() => {
+                        this.isChangingTrack = false;
+                        this.isLoading = false;
                         this.isPlaying = true;
+                        this.errorRetryCount = 0;
                         this.updatePlayButton();
+                        this.renderQueue();
 
-                        // Track network data usage and record listen event for LRU
-                        if (window.app && window.app.storageManager) {
-                            if (!isOfflineCache) {
-                                const approxSize = track.size_bytes || 5000000;
-                                window.app.storageManager.recordNetworkUsage(approxSize);
-                            }
-                        }
+                        // Record listen event for LRU
                         if (track.filename) {
                             fetch('/api/track/listen', {
                                 method: 'POST',
@@ -272,35 +304,31 @@ class AudioPlayer {
                                 body: JSON.stringify({ filename: track.filename })
                             }).catch(() => {});
                         }
-
-                        // Automatic background offline caching ONLY for local library tracks (not live YouTube streams)
-                        if (!isOfflineCache && window.app && window.app.storageManager && trackKey && !track.is_yt && !track.id) {
-                            const fetcher = window.app.customFetch ? window.app.customFetch.bind(window.app) : fetch;
-                            fetcher(streamUrl, {}, 60000)
-                                .then(res => {
-                                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                                    return res.blob();
-                                })
-                                .then(blob => window.app.storageManager.saveOfflineTrack(trackKey, blob, track))
-                                .catch(err => console.error("Auto offline caching failed:", err));
-                        }
                     }).catch(err => {
-                        console.warn("Autoplay deferred or blocked, attaching canplay listener:", err);
+                        console.warn("[AudioPlayer] play() deferred/buffering:", err);
                         const onCanPlayOnce = () => {
+                            this.audio.removeEventListener('canplay', onCanPlayOnce);
                             this.audio.play().then(() => {
+                                this.isChangingTrack = false;
+                                this.isLoading = false;
                                 this.isPlaying = true;
+                                this.errorRetryCount = 0;
                                 this.updatePlayButton();
+                                this.renderQueue();
                             }).catch(e => {
-                                console.warn("Retry play failed:", e);
-                                this.isPlaying = false;
-                                this.updatePlayButton();
+                                console.warn("[AudioPlayer] Retry play failed:", e);
                             });
                         };
-                        this.audio.addEventListener('canplay', onCanPlayOnce, { once: true });
+                        this.audio.addEventListener('canplay', onCanPlayOnce);
                     });
                 }
             };
             tryPlay();
+        } else {
+            this.isChangingTrack = false;
+            this.isLoading = false;
+            this.isPlaying = false;
+            this.updatePlayButton();
         }
 
         this.renderQueue();
@@ -389,27 +417,46 @@ class AudioPlayer {
         });
     }
 
+    isSameTrack(a, b) {
+        if (!a || !b) return false;
+        if (a.filename && b.filename && a.filename === b.filename) return true;
+        if (a.id && b.id && a.id === b.id) return true;
+        if (a.title && b.title && a.artist && b.artist) {
+            const clean = s => String(s).toLowerCase().trim().replace(/[\s\-_.,()]+/g, ' ');
+            if (clean(a.title) === clean(b.title) && clean(a.artist) === clean(b.artist)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     playNowWithResume(track) {
         if (!track) return;
 
-        // Check if track is already in the active default playlist
-        const existingIdx = this.playlist.findIndex(t => 
-            (track.filename && t.filename === track.filename) || 
-            (track.id && t.id === track.id)
-        );
+        // 1. Search if track already exists in the playlist and remove previous occurrences to avoid duplicates
+        for (let i = this.playlist.length - 1; i >= 0; i--) {
+            if (this.isSameTrack(this.playlist[i], track)) {
+                this.playlist.splice(i, 1);
+                if (i < this.currentIndex) {
+                    this.currentIndex--;
+                }
+            }
+        }
 
-        if (existingIdx !== -1) {
-            // Already in playlist: jump to it and play without removing other songs
-            this.loadTrack(existingIdx, true);
+        // 2. Insert at next playback position
+        let insertIdx = 0;
+        if (this.playlist.length === 0 || this.currentIndex === -1) {
+            this.playlist = [track];
+            insertIdx = 0;
         } else {
-            // Insert right after current song (or at end) so other songs are NEVER wiped out
-            const insertIdx = (this.currentIndex >= 0 && this.currentIndex < this.playlist.length) 
+            insertIdx = (this.currentIndex >= 0 && this.currentIndex < this.playlist.length) 
                 ? this.currentIndex + 1 
                 : this.playlist.length;
             this.playlist.splice(insertIdx, 0, track);
-            this.loadTrack(insertIdx, true);
         }
 
+        // 3. Immediately play the newly added track
+        this.loadTrack(insertIdx, true);
         this.renderQueue();
         this.triggerSaveUserState();
     }
@@ -425,7 +472,17 @@ class AudioPlayer {
             return;
         }
 
-        // Insert next in queue after current song without wiping out the rest of the list
+        // 1. Search if track already exists and remove previous occurrences
+        for (let i = this.playlist.length - 1; i >= 0; i--) {
+            if (i !== this.currentIndex && this.isSameTrack(this.playlist[i], track)) {
+                this.playlist.splice(i, 1);
+                if (i < this.currentIndex) {
+                    this.currentIndex--;
+                }
+            }
+        }
+
+        // 2. Insert next in queue right after the currently playing song
         const insertIdx = (this.currentIndex >= 0 && this.currentIndex < this.playlist.length) 
             ? this.currentIndex + 1 
             : this.playlist.length;
@@ -509,26 +566,10 @@ class AudioPlayer {
     }
 
     playNext() {
-        // If we are playing an interrupted single track and user presses next, restore previous queue and advance
-        if (this.interruptedState && this.playlist.length === 1) {
-            const stateToRestore = this.interruptedState;
-            this.interruptedState = null;
-            if (stateToRestore.playlist && stateToRestore.playlist.length > 0) {
-                this.playlist = stateToRestore.playlist;
-                this.currentIndex = (stateToRestore.currentIndex >= 0 && stateToRestore.currentIndex < this.playlist.length) 
-                    ? (stateToRestore.currentIndex + 1) % stateToRestore.playlist.length 
-                    : 0;
-                this.loadTrack(this.currentIndex, true);
-                return;
-            }
-        }
-
         if (this.playlist.length === 0) return;
 
         let nextIdx = -1;
-        if (this.preloadedNextIndex >= 0 && this.preloadedNextIndex < this.playlist.length) {
-            nextIdx = this.preloadedNextIndex;
-        } else if (this.isShuffle) {
+        if (this.isShuffle) {
             if (this.playlist.length > 1) {
                 do {
                     nextIdx = Math.floor(Math.random() * this.playlist.length);
@@ -599,7 +640,7 @@ class AudioPlayer {
             this.audio.currentTime = 0;
             this.audio.play().catch(console.error);
         } else if (this.playlist.length > 0) {
-            // Loop and play the next track among available tracks (restarting from the beginning if reaching the end)
+            // Advance to next track in queue (loops indefinitely when reaching the end)
             this.playNext();
         } else {
             this.isPlaying = false;
@@ -613,23 +654,20 @@ class AudioPlayer {
 
     async cacheCompletedTrack(track) {
         const trackKey = track.filename || track.id;
-        if (!trackKey) return;
+        if (!trackKey || !window.app || !window.app.storageManager) return;
+        if (track.is_yt || track.id) return; // Do not auto-download YT streams on track end
 
         try {
             const existing = await window.app.storageManager.getOfflineTrack(trackKey);
             if (existing && existing.blob) return;
 
-            const streamUrl = (track.is_yt || track.id)
-                ? `/api/stream_yt?v=${encodeURIComponent(track.id)}`
-                : `/api/stream/${encodeURIComponent(track.filename)}`;
-
+            const streamUrl = `/api/stream/${encodeURIComponent(track.filename)}`;
             const fetcher = window.app.customFetch ? window.app.customFetch.bind(window.app) : fetch;
-            console.log(`[Offline Cache] Saving finished track to IndexedDB: ${track.title || trackKey}`);
             const res = await fetcher(streamUrl, {}, 30000);
             if (res.ok) {
                 const blob = await res.blob();
                 await window.app.storageManager.saveOfflineTrack(trackKey, blob, track);
-                console.log(`[Offline Cache] Successfully saved completed track into IndexedDB: ${trackKey}`);
+                console.log(`[Offline Cache] Saved completed track into IndexedDB: ${trackKey}`);
             }
         } catch (err) {
             console.debug("Error caching completed track:", err);
@@ -652,55 +690,27 @@ class AudioPlayer {
         if (!this.audio || !this.audio.duration || this.playlist.length === 0) return;
         const remaining = this.audio.duration - this.audio.currentTime;
 
-        // Trigger preloading when 10 seconds or less remain in current song for gapless transition
+        // Trigger background pre-warming when 10s remain in current song
         if (remaining > 0 && remaining <= 10 && !this.isPreloadingNext) {
             this.isPreloadingNext = true;
-            let nextIdx = this.currentIndex + 1;
-            if (this.isShuffle) {
+            let nextIdx = (this.currentIndex + 1) % this.playlist.length;
+            if (this.isShuffle && this.playlist.length > 1) {
                 nextIdx = Math.floor(Math.random() * this.playlist.length);
-            }
-            if (nextIdx >= this.playlist.length) {
-                nextIdx = 0;
-            }
-
-            if (nextIdx === this.currentIndex || nextIdx < 0 || nextIdx >= this.playlist.length) {
-                return;
             }
 
             const nextTrack = this.playlist[nextIdx];
-            if (!nextTrack) return;
-            const trackKey = nextTrack.filename || nextTrack.id;
-            if (!trackKey) return;
+            if (!nextTrack) {
+                this.isPreloadingNext = false;
+                return;
+            }
 
-            if (window.app && window.app.storageManager) {
-                try {
-                    const cached = await window.app.storageManager.getOfflineTrack(trackKey);
-                    if (cached && cached.blob) {
-                        this.preloadedNextBlobUrl = URL.createObjectURL(cached.blob);
-                        this.preloadedNextIndex = nextIdx;
-                        console.log(`[Preloader] Next track is already in local IndexedDB cache.`);
-                    } else if (nextTrack.is_yt || nextTrack.id) {
-                        if (window.app && typeof window.app.preloadYtTrack === 'function') {
-                            console.log(`[Preloader] Pre-warming next YouTube track in background: ${nextTrack.id}`);
-                            window.app.preloadYtTrack(nextTrack.id);
-                        }
-                    } else if (!nextTrack.is_yt && !nextTrack.id) {
-                        console.log(`[Preloader] 5s remaining. Preloading next local track (${nextIdx}): ${nextTrack.title || trackKey}`);
-                        const streamUrl = `/api/stream/${encodeURIComponent(nextTrack.filename)}`;
-                        const fetcher = window.app.customFetch ? window.app.customFetch.bind(window.app) : fetch;
-                        const res = await fetcher(streamUrl, {}, 30000);
-                        if (res.ok) {
-                            const blob = await res.blob();
-                            await window.app.storageManager.saveOfflineTrack(trackKey, blob, nextTrack);
-                            this.preloadedNextBlobUrl = URL.createObjectURL(blob);
-                            this.preloadedNextIndex = nextIdx;
-                            console.log(`[Preloader] Preloaded & saved next track into IndexedDB.`);
-                        }
-                    }
-                } catch (err) {
-                    console.warn("[Preloader] Preload error:", err);
+            if (nextTrack.is_yt || nextTrack.id) {
+                if (window.app && typeof window.app.preloadYtTrack === 'function') {
+                    window.app.preloadYtTrack(nextTrack.id);
                 }
             }
+        } else if (remaining > 15) {
+            this.isPreloadingNext = false;
         }
     }
 
@@ -710,19 +720,34 @@ class AudioPlayer {
 
     onAudioError(e) {
         console.error("Audio playback error:", e);
-        this.isPlaying = false;
-        this.updatePlayButton();
+        if (this.errorSkipTimer) clearTimeout(this.errorSkipTimer);
 
-        // Auto-skip to next track if error occurs in playlist mode
-        if (this.playlist && this.playlist.length > 1 && this.currentIndex >= 0) {
-            console.warn(`[AudioPlayer] Stream error on track index ${this.currentIndex}. Advancing to next track in 1.5s...`);
+        if (this.playlist && this.playlist.length > 1) {
+            console.warn(`[AudioPlayer] Stream error on track index ${this.currentIndex}. Advancing to next track...`);
             if (window.app && window.app.showToast) {
-                window.app.showToast("Error en la fuente de audio. Pasando a la siguiente canción...", "warning");
+                window.app.showToast("Error en la pista de audio. Pasando a la siguiente...", "warning");
             }
-            if (this.errorSkipTimer) clearTimeout(this.errorSkipTimer);
             this.errorSkipTimer = setTimeout(() => {
                 this.playNext();
-            }, 1500);
+            }, 600);
+        } else if (this.playlist && this.playlist.length === 1) {
+            this.errorRetryCount = (this.errorRetryCount || 0) + 1;
+            if (this.errorRetryCount <= 3) {
+                console.warn(`[AudioPlayer] Retrying current track in 1s (attempt ${this.errorRetryCount})...`);
+                this.errorSkipTimer = setTimeout(() => {
+                    if (this.playlist.length === 1) {
+                        this.loadTrack(0, true);
+                    }
+                }, 1000);
+            } else {
+                this.isLoading = false;
+                this.isPlaying = false;
+                this.updatePlayButton();
+            }
+        } else {
+            this.isLoading = false;
+            this.isPlaying = false;
+            this.updatePlayButton();
         }
     }
 
@@ -763,6 +788,34 @@ class AudioPlayer {
         }
     }
 
+    toggleQueueModal() {
+        const el = this.elQueueDrawer || document.getElementById('queue-drawer');
+        if (!el) return;
+        if (el.classList.contains('hidden')) {
+            this.openQueueModal();
+        } else {
+            this.closeQueueModal();
+        }
+    }
+
+    openQueueModal() {
+        const el = this.elQueueDrawer || document.getElementById('queue-drawer');
+        if (!el) return;
+        el.classList.remove('hidden');
+        this.renderQueue();
+    }
+
+    closeQueueModal() {
+        const el = this.elQueueDrawer || document.getElementById('queue-drawer');
+        if (!el) return;
+        el.classList.add('hidden');
+    }
+
+    selectTrackFromQueue(index) {
+        this.loadTrack(index, true);
+        this.closeQueueModal();
+    }
+
     renderQueue() {
         if (!this.elQueueList) return;
 
@@ -773,11 +826,16 @@ class AudioPlayer {
 
         if (this.playlist.length === 0) {
             this.elQueueList.innerHTML = `
-                <div class="p-6 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-2">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="w-8 h-8 text-slate-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
-                    </svg>
-                    <span>No hay pistas en la lista</span>
+                <div class="h-full min-h-[16rem] p-8 text-center text-sm text-slate-400 flex flex-col items-center justify-center gap-3">
+                    <div class="w-14 h-14 rounded-2xl bg-purple-900/30 border border-purple-500/20 flex items-center justify-center">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="w-7 h-7 text-purple-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <p class="font-medium text-slate-200">No hay pistas disponibles</p>
+                        <p class="text-xs text-slate-500 mt-0.5">Selecciona canciones de la biblioteca o de tus listas para añadirlas.</p>
+                    </div>
                 </div>
             `;
             return;
@@ -785,14 +843,14 @@ class AudioPlayer {
 
         this.elQueueList.innerHTML = this.playlist.map((track, i) => {
             const isActive = i === this.currentIndex;
-            let statusIcon = `<span class="font-mono text-[11px]">${i + 1}</span>`;
+            let statusIcon = `<span class="font-mono text-xs text-slate-400">${i + 1}</span>`;
             if (isActive) {
                 if (this.isLoading) {
-                    statusIcon = `<svg class="animate-spin w-3.5 h-3.5 text-purple-400 inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+                    statusIcon = `<svg class="animate-spin w-4 h-4 text-purple-400 inline" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
                 } else if (this.isPlaying) {
-                    statusIcon = `<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400 fill-current" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
+                    statusIcon = `<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-purple-400 fill-current" viewBox="0 0 24 24"><polygon points="5 3 19 12 5 21 5 3"/></svg>`;
                 } else {
-                    statusIcon = `<svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400 fill-current" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
+                    statusIcon = `<svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-purple-400 fill-current" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>`;
                 }
             }
 
@@ -804,21 +862,29 @@ class AudioPlayer {
                 artist = parsed.artist;
             }
 
+            let coverSrc = '';
+            if (track.thumbnail) {
+                coverSrc = track.thumbnail;
+            } else if (track.has_cover && track.filename) {
+                coverSrc = `/api/library/cover/${encodeURIComponent(track.filename)}`;
+            }
+
             return `
-                <div class="group flex items-center justify-between gap-2 p-2 rounded-xl transition ${isActive ? 'bg-purple-900/40 text-purple-200 border border-purple-500/40 shadow-sm' : 'hover:bg-slate-800/60 text-slate-300 border border-transparent'}">
-                    <div onclick="window.player.loadTrack(${i}, true)" class="flex items-center gap-2.5 flex-1 min-w-0 cursor-pointer">
-                        <span class="w-5 text-center ${isActive ? 'text-purple-400 font-bold' : 'text-slate-500'} flex items-center justify-center flex-shrink-0">${statusIcon}</span>
+                <div class="group flex items-center justify-between gap-3 p-2.5 sm:p-3 rounded-xl transition ${isActive ? 'bg-purple-900/40 text-purple-200 border border-purple-500/40 shadow-sm' : 'hover:bg-white/5 text-slate-300 border border-transparent'}">
+                    <div onclick="window.player.selectTrackFromQueue(${i})" class="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
+                        <span class="w-6 text-center ${isActive ? 'text-purple-400 font-bold' : 'text-slate-500'} flex items-center justify-center flex-shrink-0">${statusIcon}</span>
+                        ${coverSrc ? `<img src="${coverSrc}" class="w-10 h-10 rounded-lg object-cover flex-shrink-0 shadow-sm border border-white/10" alt="cover" loading="lazy" />` : `<div class="w-10 h-10 rounded-lg bg-slate-800 border border-white/10 flex items-center justify-center flex-shrink-0 text-slate-500"><svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 text-purple-400/70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="12" cy="12" r="3"/><polygon points="10 10 14 12 10 14 10 10"/></svg></div>`}
                         <div class="flex-1 min-w-0">
-                            <p class="text-xs font-semibold truncate leading-tight ${isActive ? 'text-purple-200 font-bold' : 'text-slate-200'}">${this.escapeHtml(title)}</p>
-                            <p class="text-[10px] text-slate-400 truncate leading-tight">${this.escapeHtml(artist)}</p>
+                            <p class="text-sm font-semibold truncate leading-tight ${isActive ? 'text-purple-200 font-bold' : 'text-slate-200'}">${this.escapeHtml(title)}</p>
+                            <p class="text-xs text-slate-400 truncate leading-tight mt-0.5">${this.escapeHtml(artist)}</p>
                         </div>
                     </div>
-                    <div class="flex items-center gap-1 flex-shrink-0">
-                        <span class="text-[10px] text-slate-500 font-mono hidden sm:inline">${track.duration_string || ''}</span>
+                    <div class="flex items-center gap-2 flex-shrink-0">
+                        <span class="text-xs text-slate-400 font-mono hidden sm:inline">${track.duration_string || ''}</span>
                         <button onclick="event.stopPropagation(); window.player.removeFromQueue(${i})" 
-                                class="p-1 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition"
+                                class="p-1.5 rounded-lg text-slate-400 hover:text-red-400 hover:bg-red-500/10 transition"
                                 title="Quitar de la lista">
-                            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
                             </svg>
                         </button>
@@ -841,7 +907,7 @@ class AudioPlayer {
             playlist: this.playlist,
             currentIndex: this.currentIndex,
             currentTime: this.audio ? (this.audio.currentTime || 0) : 0,
-            volume: this.audio ? this.audio.volume : 1,
+            volume: 1.0,
             isPlaying: false,
             isShuffle: !!this.isShuffle,
             isRepeat: !!this.isRepeat
@@ -868,9 +934,8 @@ class AudioPlayer {
                 } catch(e) {}
             }
         }
-        if (typeof state.volume === 'number' && this.audio) {
-            this.audio.volume = state.volume;
-            if (this.elVolumeSlider) this.elVolumeSlider.value = state.volume;
+        if (this.audio) {
+            this.audio.volume = 1.0;
         }
     }
 

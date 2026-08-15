@@ -1,4 +1,4 @@
-# 🎵 Music Cloud App (v1.4.29)
+# 🎵 Music Cloud App (v1.5.0)
 
 > **Buscador de Artistas y Discografía, Descargador de YouTube y Reproductor Cloud con Rclone & WireGuard VPN.**
 
@@ -6,7 +6,17 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 
 ---
 
-## ✨ Características Principales
+## ✨ Novedades de la Versión 1.5.0
+
+* 🎛️ **Modal de Pistas Disponibles (Cola Activa) al 90%**: Visualización panorámica de la cola de reproducción con desenfoque de fondo (`backdrop-blur-md`), carátulas de alta calidad, salto instantáneo de canción y acciones de guardado y vaciado de lista.
+* 🖼️ **Acceso a Opciones desde la Portada**: Al pulsar sobre la portada de la canción en el reproductor se despliega la modal general de la canción para descargarla a la biblioteca, agregarla a una lista o gestionarla directamente.
+* 🔁 **Deduplicación Automática y Bucle Continuo**: Al añadir una pista existente, el sistema elimina duplicados previos conservando la última posición elegida por el usuario. La reproducción avanza en bucle infinito sin paradas inesperadas ni saltos erráticos.
+* 📱 **Diseño Móvil Ultra-Compacto con Carátula de 56px**: Portada ampliada (`w-14 h-14 rounded-xl`) con aprovechamiento vertical óptimo y controles táctiles precisos.
+* ☁️ **Integración de Rclone en Almacenamiento**: Panel de configuración y sincronización en la nube integrado dentro de la vista de Almacenamiento (optimizado para vista de escritorio).
+
+---
+
+## 🚀 Características Principales
 
 ### 🔍 1. Explorador Oficial de Artistas y Discografía (Deezer API)
 * **Búsqueda por artista**: Encuentra cualquier artista musical con información de seguidores, álbumes y lanzamientos.
@@ -20,17 +30,17 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 * **Preescuchas de 30s aisladas**: Reproducción directa desde el navegador sin ensuciar la cola del reproductor principal ni consumir ancho de banda del servidor.
 * **Pausa y reanudación automática**: Al abrir la ficha de una canción en el buscador, el reproductor principal se pausa automáticamente y reproduce la muestra; al cerrar la modal, la canción principal se reanuda en el punto exacto.
 
-### 🚀 3. Descarga y Streaming Anti-Bloqueo (YouTube & yt-dlp)
+### ⚡ 3. Descarga y Streaming Anti-Bloqueo (YouTube & yt-dlp)
 * **Descarga a 320 kbps**: Extracción de audio en segundo plano optimizada con `--extractor-args "youtube:player_client=android,web"` y `--geo-bypass` para evitar bloqueos HTTP 403.
 * **Etiquetado ID3 automático (`mutagen`)**: Inserta título oficial, artista, álbum, año y carátula HD (1000x1000) de Deezer directamente en los tags del archivo MP3.
-* **Streaming nativo con HTTP Range (`206 Partial Content`)**: Adelanta o rebobina canciones al instante sin tiempos de espera.
+* **Streaming nativo con HTTP Range (`206 Partial Content`)**: Adelanta o rebobina canciones al instante sin tiempos de espera ni cortes de socket.
 
 ### 📱 4. PWA (Progressive Web App) y Modo Offline
 * **Instalable en móvil y escritorio**: Soporta modo pantalla completa y controles en la pantalla de bloqueo mediante **MediaSession API**.
 * **Almacenamiento Offline IndexedDB**: Guarda canciones y carátulas en la memoria del dispositivo para reproducir sin conexión a internet.
 
 ### 👥 5. Gestión Multiusuario y Listas de Reproducción
-* Selector de perfiles de usuario locales con persistencia de estado (volumen, posición de reproducción, cola activa).
+* Selector de perfiles de usuario locales con persistencia de estado (posición de reproducción, cola activa y preferencias).
 * Creación, edición y ordenación de listas de reproducción personalizadas.
 * Filtrado de la biblioteca por usuario o vista global.
 * Herramientas para **exportar e importar copias de seguridad** de la biblioteca y listas en formato JSON.
@@ -115,3 +125,4 @@ Para servir la aplicación con certificado SSL HTTPS:
 | `DELETE` | `/api/library/{filename}` | Elimina un archivo de la biblioteca |
 | `GET` | `/api/trending` | Éxitos y listas de LOS40 y Spotify |
 | `GET` | `/api/rclone/status` | Estado del punto de montaje y almacenamiento |
+| `POST` | `/api/rclone/config` | Guarda configuración de `rclone.conf` |
