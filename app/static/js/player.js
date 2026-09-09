@@ -135,17 +135,22 @@ class AudioPlayer {
             this.isLoading = true;
             this.updatePlayButton();
             this.renderQueue();
+            this.startLoadingBeep();
+        });
+        this.audio.addEventListener('stalled', () => {
+            if (this.isPlaying && !this._userRequestedPause && this.audio.paused) {
+                console.log("[AudioPlayer] Audio stream stalled in background, attempting auto-resume...");
+                if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                    this.audioCtx.resume().catch(() => {});
+                }
+                this.audio.play().catch(() => {});
+            }
         });
 
         // Window resize listener to recalculate text overflow marquee
         window.addEventListener('resize', () => {
             if (this._marqueeResizeTimeout) clearTimeout(this._marqueeResizeTimeout);
             this._marqueeResizeTimeout = setTimeout(() => this.updateTextMarquees(), 100);
-        });
-        this.audio.addEventListener('waiting', () => {
-            this.isLoading = true;
-            this.updatePlayButton();
-            this.startLoadingBeep();
         });
         this.audio.addEventListener('playing', () => {
             this.isLoading = false;
@@ -154,6 +159,9 @@ class AudioPlayer {
             this.isPlaying = true;
             this._userRequestedPause = false;
             this.errorRetryCount = 0;
+            if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                this.audioCtx.resume().catch(() => {});
+            }
             this.applyStartSilenceTrim();
             this.updatePlayButton();
             this.renderQueue();
@@ -165,15 +173,56 @@ class AudioPlayer {
         });
         this.audio.addEventListener('pause', () => {
             this.stopLoadingBeep();
-            // Ignore internal pause during track transition/source change, or within transition window unless explicitly requested by user
-            const withinTransitionWindow = (Date.now() - this._lastSourceChangeTime) < 800;
-            if (this.isChangingTrack || this.isLoading || (withinTransitionWindow && !this._userRequestedPause)) {
-                // If player was intended to be playing and paused by internal DOM transition, automatically resume
-                if (this.isPlaying && !this._userRequestedPause && this.audio.paused) {
-                    this.audio.play().catch(e => console.debug("[AudioPlayer] Transition auto-resume suppressed:", e));
+
+            // If the user did NOT request a pause and player state is intended to be playing:
+            // This is an involuntary pause caused by mobile OS power saving, background buffer underrun,
+            // or audio focus temporary glitch. Do NOT set isPlaying = false; auto-resume immediately!
+            if (!this._userRequestedPause && this.isPlaying) {
+                console.log("[AudioPlayer] Involuntary pause intercepted (userRequestedPause=false). Maintaining playback...");
+                this.isLoading = true;
+                this.updatePlayButton();
+
+                if (this._autoResumeTimer) {
+                    clearTimeout(this._autoResumeTimer);
+                    this._autoResumeTimer = null;
+                }
+
+                const attemptResume = () => {
+                    if (this._userRequestedPause || !this.isPlaying || !this.audio) return;
+                    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                        this.audioCtx.resume().catch(() => {});
+                    }
+                    if (this.audio.paused) {
+                        this.audio.play().then(() => {
+                            this.isLoading = false;
+                            this.updatePlayButton();
+                        }).catch(e => {
+                            console.debug("[AudioPlayer] Auto-resume postponed, will retry:", e);
+                            if (!this._autoResumeTimer && !this._userRequestedPause && this.isPlaying) {
+                                this._autoResumeTimer = setTimeout(attemptResume, 350);
+                            }
+                        });
+                    } else {
+                        this.isLoading = false;
+                        this.updatePlayButton();
+                    }
+                };
+
+                const onCanPlayResume = () => {
+                    this.audio.removeEventListener('canplay', onCanPlayResume);
+                    attemptResume();
+                };
+
+                if (this.audio.readyState >= 2) {
+                    attemptResume();
+                } else {
+                    this.audio.addEventListener('canplay', onCanPlayResume, { once: true });
+                    this._autoResumeTimer = setTimeout(attemptResume, 500);
                 }
                 return;
             }
+
+            // Legitimate user-requested pause
             this.isLoading = false;
             this.isPlaying = false;
             this.updatePlayButton();
@@ -390,7 +439,7 @@ class AudioPlayer {
         if (!AudioCtx) return;
 
         try {
-            this.audioCtx = new AudioCtx();
+            this.audioCtx = new AudioCtx({ latencyHint: 'playback' });
             this.sourceNode = this.audioCtx.createMediaElementSource(this.audio);
 
             // Stage 1: 3-Band Parametric Equalizer (Bajos 120Hz, Medios 1000Hz, Altos 6000Hz)
@@ -958,6 +1007,13 @@ class AudioPlayer {
             return cached;
         }
 
+        // If we don't have a local blob (must fetch over network) and page is in background (screen off),
+        // skip remote fetch analysis to prevent bandwidth contention with the audio streaming element.
+        if (!blob && document.hidden) {
+            console.debug("[AudioAnalysis] Page is in background and track is not locally cached. Skipping network analysis fetch.");
+            return;
+        }
+
         try {
             let arrayBuffer = null;
             if (blob) {
@@ -1097,7 +1153,9 @@ class AudioPlayer {
         if (!this.trimSilence || !this.currentTrimPoints || !this.currentTrimPoints.start || this.currentTrimPoints.start <= 0.1) return;
         if (this.audio) {
             const cur = this.audio.currentTime || 0;
-            if (cur < this.currentTrimPoints.start - 0.04) {
+            // Only skip initial silence before playback has audibly progressed (< 0.08s).
+            // Seeking mid-stream after playback has started induces mobile audio buffer underruns and pauses.
+            if (cur < 0.08 && cur < this.currentTrimPoints.start - 0.04) {
                 console.log(`[SilenceTrim] Skipping initial silence from ${cur.toFixed(2)}s to ${this.currentTrimPoints.start}s`);
                 try {
                     this.audio.currentTime = this.currentTrimPoints.start;
@@ -1364,7 +1422,11 @@ class AudioPlayer {
                                 console.warn("[AudioPlayer] Retry play failed:", e);
                             });
                         };
-                        this.audio.addEventListener('canplay', onCanPlayOnce);
+                        if (this.audio.readyState >= 2) {
+                            onCanPlayOnce();
+                        } else {
+                            this.audio.addEventListener('canplay', onCanPlayOnce, { once: true });
+                        }
                     });
                 }
             };
@@ -2000,7 +2062,11 @@ class AudioPlayer {
         }
 
         if (finishedTrack && window.app && window.app.storageManager) {
-            this.cacheCompletedTrack(finishedTrack);
+            // Delay caching completed track by 12s so it does not saturate network bandwidth
+            // while the new track is buffering its critical initial seconds.
+            setTimeout(() => {
+                this.cacheCompletedTrack(finishedTrack);
+            }, 12000);
         }
     }
 
@@ -2076,8 +2142,8 @@ class AudioPlayer {
             }
         }
 
-        // Automatic start silence catch-up in early playback (if analysis resolved after play started)
-        if (this.trimSilence && this.currentTrimPoints && this.currentTrimPoints.start > 0.15 && current < this.currentTrimPoints.start - 0.04 && current < 1.0) {
+        // Automatic start silence catch-up in early playback (only if playback has barely started < 0.08s)
+        if (this.trimSilence && this.currentTrimPoints && this.currentTrimPoints.start > 0.15 && current < 0.08 && current < this.currentTrimPoints.start - 0.04) {
             this.applyStartSilenceTrim();
         }
 
@@ -2887,6 +2953,7 @@ class AudioPlayer {
         const originalVol = this.sleepTimerOriginalVolume || 1.0;
         this.cancelSleepTimer(false);
 
+        this._userRequestedPause = true;
         if (this.audio) {
             this.audio.pause();
             this.audio.volume = originalVol;

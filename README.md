@@ -1,4 +1,4 @@
-# 🎵 Music Cloud App (v2.0.5)
+# 🎵 Music Cloud App (v2.0.6)
 
 > **Buscador de Artistas y Discografía, Descargador de YouTube y Reproductor Cloud con Rclone & WireGuard VPN.**
 
@@ -6,8 +6,13 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 
 ---
 
-## ✨ Novedades de la Versión 2.0 (v2.0.0 – v2.0.5)
+## ✨ Novedades de la Versión 2.0 (v2.0.0 – v2.0.6)
 
+* 🔋 **Reproducción Continua en Segundo Plano (Mobile PWA & Screen-Off Fix - v2.0.6)**:
+  * **Solución definitiva al corte de ~0.5s**: Corregido el problema crítico por el cual al terminar una canción y auto-avanzar a la siguiente, la reproducción se detenía a los pocos instantes en dispositivos móviles con pantalla apagada o en segundo plano.
+  * **Reanudación automática ante pausas involuntarias**: Distinción estricta entre pausas manuales del usuario y pausas forzadas por ahorro de batería del SO o micro-desconexiones de red, manteniendo siempre el estado de reproducción y reintentando la reproducción de forma transparente.
+  * **Prioridad absoluta al streaming inicial**: La descarga en caché de la pista finalizada se pospone 12 segundos para no saturar el ancho de banda móvil mientras arranca el nuevo tema. Se evita además la descarga remota de análisis de silencios con la pantalla apagada.
+  * **Web Audio optimizado para reproducción continua**: Inicialización del `AudioContext` con `latencyHint: 'playback'` y reconexión automática tras suspensión del sistema.
 * 📊 **Ordenación Inteligente por Reproducciones Mensuales («Top mes»)**:
   * Botón interactivo de la estrella en la vista de pistas disponibles con **flechas dinámicas de dirección**:
     * **Flecha hacia abajo (↓)**: Ordena de **más a menos reproducciones** (orden descendente).
