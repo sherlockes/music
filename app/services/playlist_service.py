@@ -105,12 +105,41 @@ def set_track_owner(filename: str, username: str):
     data["tracks"][filename]["last_listened_at"] = datetime.now().timestamp()
     save_data(data)
 
-def record_track_listen(filename: str):
+def record_track_listen(filename: str, extra_keys: Optional[List[str]] = None):
     data = load_data()
-    if filename not in data["tracks"]:
-        data["tracks"][filename] = {}
-    data["tracks"][filename]["last_listened_at"] = datetime.now().timestamp()
+    now = datetime.now().timestamp()
+    keys = [filename] if filename else []
+    if extra_keys:
+        for k in extra_keys:
+            if k and k not in keys:
+                keys.append(k)
+    
+    cutoff = now - (35 * 86400)  # Keep ~35 days
+    for key in keys:
+        if key not in data["tracks"]:
+            data["tracks"][key] = {}
+        data["tracks"][key]["last_listened_at"] = now
+        listens = data["tracks"][key].get("listens", [])
+        if not isinstance(listens, list):
+            listens = []
+        listens = [ts for ts in listens if isinstance(ts, (int, float)) and ts >= cutoff]
+        listens.append(now)
+        data["tracks"][key]["listens"] = listens
     save_data(data)
+
+def get_track_listen_counts_last_month(days: int = 30) -> Dict[str, int]:
+    data = load_data()
+    now = datetime.now().timestamp()
+    cutoff = now - (days * 86400)
+    counts = {}
+    for key, info in data.get("tracks", {}).items():
+        if isinstance(info, dict):
+            listens = info.get("listens", [])
+            if isinstance(listens, list):
+                c = sum(1 for ts in listens if isinstance(ts, (int, float)) and ts >= cutoff)
+                if c > 0:
+                    counts[key] = c
+    return counts
 
 def get_track_owners() -> Dict[str, Dict[str, Any]]:
     data = load_data()
@@ -200,4 +229,49 @@ def update_playlist_tracks(playlist_id: str, tracks: List[str], username: str = 
             save_data(data)
             return True
     return False
+
+def update_track_filename_in_playlists_and_records(old_filename: str, new_filename: str, new_title: str = "", new_artist: str = "") -> bool:
+    """
+    Update occurrences of old_filename to new_filename across all playlists
+    and metadata records.
+    """
+    data = load_data()
+    modified = False
+
+    # 1. Update in playlists
+    for pl in data.get("playlists", []):
+        tracks = pl.get("tracks", [])
+        if isinstance(tracks, list):
+            new_tracks = []
+            for item in tracks:
+                if isinstance(item, str):
+                    if item == old_filename:
+                        new_tracks.append(new_filename)
+                        modified = True
+                    else:
+                        new_tracks.append(item)
+                elif isinstance(item, dict):
+                    if item.get("filename") == old_filename:
+                        item["filename"] = new_filename
+                        if new_title: item["title"] = new_title
+                        if new_artist: item["artist"] = new_artist
+                        new_tracks.append(item)
+                        modified = True
+                    else:
+                        new_tracks.append(item)
+                else:
+                    new_tracks.append(item)
+            pl["tracks"] = new_tracks
+
+    # 2. Update in data["tracks"] (ownership, stats)
+    if "tracks" in data and isinstance(data["tracks"], dict):
+        if old_filename in data["tracks"]:
+            track_data = data["tracks"].pop(old_filename)
+            data["tracks"][new_filename] = track_data
+            modified = True
+
+    if modified:
+        save_data(data)
+    return True
+
 

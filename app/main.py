@@ -38,6 +38,7 @@ from app.services.library_service import (
     get_library_files,
     extract_cover_bytes,
     delete_track,
+    update_track_metadata_and_rename,
     enforce_cloud_storage_limit
 )
 from app.services.playlist_service import (
@@ -48,6 +49,7 @@ from app.services.playlist_service import (
     delete_playlist,
     update_playlist_tracks,
     record_track_listen,
+    get_track_listen_counts_last_month,
     get_cloud_settings,
     save_cloud_settings
 )
@@ -92,15 +94,34 @@ async def start_rclone_watchdog():
 
     asyncio.create_task(watchdog_loop())
 
-    async def prewarm_trending():
-        try:
-            logger.info("[Startup] Checking LOS40 trending cache...")
-            await get_trending_tracks(limit=40, region="los40", force_refresh=False)
-            logger.info("[Startup] LOS40 trending cache check completed.")
-        except Exception as e:
-            logger.error(f"[Startup] Error checking LOS40 trending cache: {e}")
+    async def prewarm_trending_loop():
+        # Wait 5 seconds after startup before starting initial cache verification
+        await asyncio.sleep(5)
+        while True:
+            try:
+                logger.info("[Trending Watchdog] Checking weekly trending lists (LOS40, Pop Rock Español, Spotify, YouTube)...")
+                for region in ["pop_rock_es", "los40", "spotify_es", "spotify_global", "es", "global"]:
+                    try:
+                        await get_trending_tracks(limit=40, region=region, force_refresh=False)
+                    except Exception as cat_err:
+                        logger.error(f"[Trending Watchdog] Error refreshing category '{region}': {cat_err}")
+                logger.info("[Trending Watchdog] Weekly trending cache verification completed.")
+            except Exception as e:
+                logger.error(f"[Trending Watchdog] Error in trending background loop: {e}")
+            await asyncio.sleep(4 * 3600) # Check every 4 hours for weekly Monday expiration
 
-    asyncio.create_task(prewarm_trending())
+    asyncio.create_task(prewarm_trending_loop())
+
+# Middleware: Force fresh JS, CSS, and manifest assets without aggressive browser caching
+@app.middleware("http")
+async def add_custom_cache_headers(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path.startswith("/static/js/") or path.startswith("/static/css/") or path in ["/sw.js", "/manifest.json", "/"]:
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 # Static and Template mounts
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
@@ -154,6 +175,10 @@ class AddTrackRequest(BaseModel):
 
 class UpdatePlaylistTracksRequest(BaseModel):
     tracks: List[str]
+
+class UpdateTrackRequest(BaseModel):
+    title: str
+    artist: str
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -288,7 +313,7 @@ async def api_search(q: str = Query(..., min_length=1, description="Búsqueda de
 
 @app.get("/api/trending")
 async def api_trending(
-    region: str = Query("es", pattern="^(es|global|los40|spotify_es|spotify_global)$"),
+    region: str = Query("es", pattern="^(es|global|los40|spotify_es|spotify_global|pop_rock_es)$"),
     limit: int = Query(40, ge=1, le=100),
     refresh: bool = Query(False)
 ):
@@ -436,6 +461,88 @@ async def api_search_tracks(q: str = Query(..., min_length=1, description="Canci
     """Direct track search via Deezer."""
     tracks = await search_deezer_tracks(q, limit=40)
     return {"query": q, "results": tracks}
+
+
+DEEZER_PREVIEW_CACHE: Dict[str, Optional[Dict[str, Any]]] = {}
+
+def clean_metadata_for_deezer(query: str, artist_param: str = "", title_param: str = "") -> Tuple[str, str]:
+    """Extract clean primary artist and song title for Deezer search API."""
+    import re
+    a = (artist_param or "").strip()
+    s = (title_param or "").strip()
+
+    if not a and not s and query:
+        if " - " in query or " – " in query or " — " in query:
+            parts = re.split(r'\s+[-–—]\s+', query, maxsplit=1)
+            a, s = parts[0].strip(), parts[1].strip()
+        else:
+            s = query.strip()
+
+    # Clean song title
+    s = re.sub(r'\.(mp3|m4a|flac|wav|webm|ogg)$', '', s, flags=re.IGNORECASE).strip()
+    s = re.sub(r'\s*\[[a-zA-Z0-9_-]{11}\]$', '', s).strip()
+    s = re.sub(r'^\s*#?\d+[\.\-\s:]+\s*', '', s).strip()
+    s = re.sub(r'\s*[\(\[\{]\s*(?:official|video|audio|clip|concept|lyrics?|letra|remaster|en\s+vivo|live|estreno|nuevo|\d{4}).*?[\)\]\}]', '', s, flags=re.IGNORECASE)
+    s = re.sub(r'[\<\>3❤️🔥♫✅➤\"\'«»]', '', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+
+    # Clean artist -> Primary artist
+    a = re.sub(r'[@\"\'«»]', '', a)
+    a = re.split(r'\b(?:feat\.?|ft\.?|featuring|con|vs|with)\b|[,&/+]|\s+[yx]\s+', a, flags=re.IGNORECASE)[0].strip()
+    a = re.sub(r'\s+', ' ', a).strip()
+    return a, s
+
+@app.get("/api/music/preview")
+async def api_music_preview(
+    q: str = Query(..., min_length=1, description="Canción y artista para obtener preescucha oficial"),
+    artist: Optional[str] = Query(None),
+    title: Optional[str] = Query(None)
+):
+    """Fetch official 30s Deezer preview URL by metadata query with multi-tier fallback cascade."""
+    clean_q = f"{artist or ''} {title or ''} {q}".strip().lower()
+    if clean_q in DEEZER_PREVIEW_CACHE:
+        cached = DEEZER_PREVIEW_CACHE[clean_q]
+        if cached:
+            return {"query": q, "preview": cached.get("preview"), "cover": cached.get("cover")}
+        return {"query": q, "preview": None, "cover": None}
+
+    primary_artist, clean_title = clean_metadata_for_deezer(q, artist_param=artist or "", title_param=title or "")
+
+    strategies = []
+    if primary_artist and clean_title:
+        strategies.append(f'track:"{clean_title}" artist:"{primary_artist}"')
+        strategies.append(f'{primary_artist} {clean_title}')
+    strategies.append(q.strip())
+    if clean_title and clean_title != q.strip():
+        strategies.append(f'track:"{clean_title}"')
+
+    preview_url = None
+    cover_url = None
+
+    for strat in strategies:
+        try:
+            tracks = await search_deezer_tracks(strat, limit=5)
+            if tracks:
+                for t in tracks:
+                    if t.get("preview"):
+                        if strat.startswith('track:') and primary_artist and not ('artist:' in strat):
+                            t_art = (t.get("artist") or "").lower()
+                            if primary_artist.lower() not in t_art and t_art not in primary_artist.lower():
+                                continue
+                        preview_url = t["preview"]
+                        cover_url = t.get("cover")
+                        break
+            if preview_url:
+                break
+        except Exception as e:
+            logger.debug(f"Deezer preview query '{strat}' failed: {e}")
+
+    if preview_url:
+        DEEZER_PREVIEW_CACHE[clean_q] = {"preview": preview_url, "cover": cover_url}
+    else:
+        DEEZER_PREVIEW_CACHE[clean_q] = None
+
+    return {"query": q, "preview": preview_url, "cover": cover_url}
 
 
 @app.post("/api/music/download_album")
@@ -1014,6 +1121,34 @@ async def api_delete_track(filename: str):
     raise HTTPException(status_code=404, detail="Archivo no encontrado o error al eliminar")
 
 
+@app.put("/api/library/{filename}")
+async def api_update_track(filename: str, payload: UpdateTrackRequest):
+    """
+    Update track title and artist, modify audio tags, rename file,
+    and update all playlists containing the track.
+    """
+    clean_title = payload.title.strip()
+    clean_artist = payload.artist.strip()
+    if not clean_title or not clean_artist:
+        raise HTTPException(status_code=400, detail="El título y el artista no pueden estar vacíos")
+
+    try:
+        res = await asyncio.to_thread(
+            update_track_metadata_and_rename,
+            filename,
+            clean_title,
+            clean_artist
+        )
+        return res
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Archivo no encontrado en la biblioteca")
+    except ValueError as ve:
+        raise HTTPException(status_code=400, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error updating track {filename}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error al actualizar la canción: {str(e)}")
+
+
 # ==========================================
 # API ENDPOINTS: RCLONE & SYSTEM CONFIG
 # ==========================================
@@ -1129,14 +1264,34 @@ class CloudSettingsRequest(BaseModel):
     storage_limit_bytes: int
 
 class ListenEventRequest(BaseModel):
-    filename: str
+    filename: Optional[str] = None
+    id: Optional[str] = None
+    title: Optional[str] = None
+    artist: Optional[str] = None
 
 @app.post("/api/track/listen")
 async def api_record_listen(payload: ListenEventRequest):
-    """Record that a track has been listened to, updating last_listened_at."""
-    if payload.filename:
-        record_track_listen(payload.filename)
+    """Record that a track has been listened to, updating last_listened_at and play counts."""
+    extra_keys = []
+    if payload.id:
+        extra_keys.append(str(payload.id))
+    if payload.title and payload.artist:
+        extra_keys.append(f"{payload.artist.strip()} - {payload.title.strip()}".lower())
+    elif payload.title:
+        extra_keys.append(payload.title.strip().lower())
+    
+    primary_key = payload.filename or (extra_keys[0] if extra_keys else None)
+    if primary_key:
+        record_track_listen(primary_key, extra_keys)
     return {"status": "ok"}
+
+@app.get("/api/tracks/play_stats")
+async def api_get_play_stats():
+    """Get play counts in the last 30 days for tracks."""
+    return {
+        "status": "ok",
+        "counts": get_track_listen_counts_last_month(30)
+    }
 
 @app.get("/api/storage/cloud_settings")
 async def api_get_cloud_settings():

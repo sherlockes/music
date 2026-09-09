@@ -1,5 +1,7 @@
 import os
 import io
+import re
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -8,7 +10,7 @@ import logging
 try:
     import mutagen
     from mutagen.mp3 import MP3
-    from mutagen.id3 import ID3, APIC
+    from mutagen.id3 import ID3, APIC, TIT2, TPE1
     from mutagen.mp4 import MP4
     from mutagen.flac import FLAC
 except ImportError:
@@ -134,7 +136,7 @@ def get_track_metadata(filepath: Path) -> Dict[str, Any]:
     return meta
 
 _LIBRARY_CACHE = {"tracks": [], "last_scan": 0}
-CACHE_TTL = 15  # 15 seconds cache TTL
+CACHE_TTL = 3600  # 1 hour cache TTL; invalidated on track changes
 
 def invalidate_library_cache():
     """Invalidate in-memory library track cache."""
@@ -242,6 +244,166 @@ def delete_track(filename: str) -> bool:
         filepath.unlink()
         return True
     return False
+
+def update_track_metadata_and_rename(old_filename: str, new_title: str, new_artist: str) -> Dict[str, Any]:
+    """
+    Update track ID3/MP4/FLAC tags (title and artist) and rename the file on disk.
+    Updates all playlists and cache stores accordingly.
+    """
+    clean_title = new_title.strip()
+    clean_artist = new_artist.strip()
+    if not clean_title or not clean_artist:
+        raise ValueError("El título y el artista no pueden estar vacíos")
+
+    old_filepath = MUSIC_DIR / old_filename
+    if not old_filepath.exists() or not old_filepath.is_file():
+        # Fallback: Locate file by YouTube video ID if it was already renamed on disk
+        m_fallback = re.search(r'\[([a-zA-Z0-9_-]{11})\]\.[a-zA-Z0-9]+$', old_filename)
+        v_id_fallback = m_fallback.group(1) if m_fallback else ""
+        found_path = None
+        if v_id_fallback:
+            for p in MUSIC_DIR.glob(f"*{v_id_fallback}*"):
+                if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS:
+                    found_path = p
+                    break
+        if found_path and found_path.exists():
+            old_filepath = found_path
+            old_filename = found_path.name
+        else:
+            raise FileNotFoundError(f"Archivo '{old_filename}' no encontrado en la biblioteca")
+
+    # 1. Update tags with Mutagen
+    ext = old_filepath.suffix.lower()
+    if mutagen:
+        try:
+            if ext == ".mp3":
+                audio = MP3(str(old_filepath), ID3=ID3)
+                try:
+                    audio.add_tags()
+                except Exception:
+                    pass
+                audio.tags.delall("TIT2")
+                audio.tags.delall("TPE1")
+                audio.tags.add(TIT2(encoding=3, text=clean_title))
+                audio.tags.add(TPE1(encoding=3, text=clean_artist))
+                audio.save()
+            elif ext in [".m4a", ".mp4"]:
+                audio = MP4(str(old_filepath))
+                if audio.tags is None:
+                    audio.add_tags()
+                audio.tags['\xa9nam'] = [clean_title]
+                audio.tags['\xa9ART'] = [clean_artist]
+                audio.save()
+            elif ext == ".flac":
+                audio = FLAC(str(old_filepath))
+                audio['title'] = [clean_title]
+                audio['artist'] = [clean_artist]
+                audio.save()
+            else:
+                try:
+                    audio = mutagen.File(str(old_filepath))
+                    if audio is not None and hasattr(audio, 'tags') and audio.tags is not None:
+                        audio.tags['title'] = [clean_title]
+                        audio.tags['artist'] = [clean_artist]
+                        audio.save()
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"Error tagging audio file {old_filename}: {e}")
+
+    # 2. Build clean new filename
+    safe_artist = re.sub(r'[\\/*?:"<>|]', "", clean_artist).strip()
+    safe_title = re.sub(r'[\\/*?:"<>|]', "", clean_title).strip()
+    m = re.search(r'\[([a-zA-Z0-9_-]{11})\]\.[a-zA-Z0-9]+$', old_filename)
+    v_id = m.group(1) if m else ""
+    suffix_id = f" [{v_id}]" if v_id else ""
+    new_filename = f"{safe_artist} - {safe_title}{suffix_id}{ext}"
+
+    final_filename = old_filename
+    final_filepath = old_filepath
+
+    if new_filename != old_filename:
+        target_path = MUSIC_DIR / new_filename
+        if target_path.exists() and target_path != old_filepath:
+            # If target has same video ID or is the same file, adopt target path
+            if v_id and f"[{v_id}]" in target_path.name:
+                logger.info(f"Target '{new_filename}' with same video ID already exists. Adopting target file.")
+                final_filename = new_filename
+                final_filepath = target_path
+                if old_filepath.exists() and old_filepath != target_path:
+                    try:
+                        old_filepath.unlink()
+                    except Exception:
+                        pass
+            else:
+                logger.warning(f"Target filename {new_filename} already exists. Retaining original filename.")
+        else:
+            try:
+                shutil.move(str(old_filepath), str(target_path))
+                final_filename = new_filename
+                final_filepath = target_path
+                logger.info(f"Renamed '{old_filename}' to '{new_filename}'")
+            except Exception as err:
+                logger.error(f"Failed to rename '{old_filename}' to '{new_filename}': {err}")
+
+    # 3. Update all playlists and app data
+    from app.services.playlist_service import update_track_filename_in_playlists_and_records, get_track_owners
+    update_track_filename_in_playlists_and_records(old_filename, final_filename, clean_title, clean_artist)
+
+    # 4. Extract and return updated metadata
+    meta = get_track_metadata(final_filepath)
+    meta["title"] = clean_title
+    meta["artist"] = clean_artist
+    meta["filename"] = final_filename
+
+    try:
+        owners = get_track_owners()
+        owner_info = owners.get(final_filename, {}) or owners.get(old_filename, {})
+        user_owner = owner_info.get("downloaded_by")
+        if not user_owner or user_owner in ["Comunidad", "invitado", "admin"]:
+            user_owner = "sherlockes"
+        meta["downloaded_by"] = user_owner
+    except Exception:
+        meta["downloaded_by"] = "sherlockes"
+
+    # 5. Invalidate and update in-memory caches
+    _FILE_META_CACHE.pop(old_filename, None)
+    try:
+        st = final_filepath.stat()
+        _FILE_META_CACHE[final_filename] = (st.st_mtime, st.st_size, meta)
+    except Exception:
+        pass
+
+    cover_data = _COVER_CACHE.pop(old_filename, None)
+    if cover_data:
+        _COVER_CACHE[final_filename] = cover_data
+
+    # Directly update _LIBRARY_CACHE so get_library_files immediately returns it without rclone dir-cache delays
+    global _LIBRARY_CACHE
+    if _LIBRARY_CACHE.get("tracks"):
+        updated_tracks = []
+        found = False
+        for t in _LIBRARY_CACHE["tracks"]:
+            if t.get("filename") == old_filename or t.get("filename") == final_filename:
+                updated_tracks.append(meta)
+                found = True
+            else:
+                updated_tracks.append(t)
+        if not found:
+            updated_tracks.insert(0, meta)
+        _LIBRARY_CACHE["tracks"] = updated_tracks
+        _LIBRARY_CACHE["last_scan"] = time.time()
+    else:
+        invalidate_library_cache()
+
+    return {
+        "success": True,
+        "old_filename": old_filename,
+        "filename": final_filename,
+        "title": clean_title,
+        "artist": clean_artist,
+        "track": meta
+    }
 
 def enforce_cloud_storage_limit(limit_bytes: Optional[int] = None) -> Dict[str, Any]:
     """

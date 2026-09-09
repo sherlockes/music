@@ -4,6 +4,7 @@ import re
 import uuid
 import logging
 import time
+import random
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Tuple
 from pathlib import Path
@@ -36,7 +37,9 @@ def format_duration(seconds: Optional[float]) -> str:
 
 def clean_song_metadata(title_raw: str, artist_raw: str = "", channel_raw: str = "") -> Tuple[str, str]:
     """
-    Separates and cleans Song Title and Artist from messy YouTube video titles, ID3 tags, and channel names.
+    Intelligently extracts and cleans Song Title and Artist from YouTube video titles,
+    ID3 tags, and channel names, correctly recognizing Song - Artist vs Artist - Song orders
+    and discarding extraneous album/video tags after pipe '|' separators.
     Returns (clean_title, clean_artist).
     """
     title = (title_raw or "").strip()
@@ -47,27 +50,30 @@ def clean_song_metadata(title_raw: str, artist_raw: str = "", channel_raw: str =
     title = re.sub(r'\.(mp3|m4a|flac|wav|webm|ogg)$', '', title, flags=re.IGNORECASE).strip()
     title = re.sub(r'\s*\[[a-zA-Z0-9_-]{11}\]$', '', title).strip()
 
-    # 2. Strip leading ranking (e.g. "#1 ", "#01 - ", "1. ")
-    title = re.sub(r'^#?\d+[\.\-\s:]+\s*', '', title).strip()
+    # 2. Strip leading ranking (e.g. "#1 ", "#01 - ", "1. ", "01 - ") but preserve numbers in titles (e.g. "20 de abril", "19 días...")
+    title = re.sub(r'^(?:#\d+|\d+[\.\-:])\s*', '', title).strip()
 
     # 3. Clean noise suffixes / video tags
     noise_patterns = [
         r'\s*[\(\[\{]\s*(?:official\s+)?(?:music\s+)?video(?:clip)?(?:\s+oficial)?\s*[\)\]\}]',
         r'\s*[\(\[\{]\s*(?:video|audio|videoclip|clip)\s+oficial\s*[\)\]\}]',
         r'\s*[\(\[\{]\s*official\s+(?:audio|lyric\s+video|lyrics?|visualizer|video)\s*[\)\]\}]',
-        r'\s*[\(\[\{]\s*(?:audio|visualizer|lyric\s+video|lyrics?|letra)\s*[\)\]\}]',
+        r'\s*[\(\[\{]\s*(?:audio|visualizer|lyric\s+video|lyrics?|letra|letra\/lyric)\s*[\)\]\}]',
         r'\s*[\(\[\{]\s*(?:en\s+vivo|en\s+directo|live|remaster(?:ed)?(?:\s+\d+)?|4k|hd|hq|full\s+hd|mv)\s*[\)\]\}]',
+        r'\s*[\(\[\{]\s*(?:oficial\s+concept|concept\s+lyrics?|concept\s+\d{4}|estreno\s+\d{4}|novedad(?:\s+\d{4})?)\s*[\)\]\}]',
+        r'\s*\|\s*(?:concept\s+\d{4}|concept\s+lyrics?|estreno\s+\d{4}|letra|lyrics?|video\s+oficial|audio\s+oficial|oficial|official|hd|4k|mv|premiere\s+\d{4}).*$',
     ]
     for pat in noise_patterns:
         title = re.sub(pat, '', title, flags=re.IGNORECASE).strip()
 
     # 4. Clean channel name if generic
     generic_channels = {
-        "los40 españa", "spotify top españa", "spotify top global", 
+        "los40 españa", "spotify top españa", "spotify top global",
+        "pop rock español (1985-2000)", "pop rock español",
         "top hits", "youtube", "desconocido", "comunidad", 
         "various artists", "varios artistas"
     }
-    clean_channel = channel
+    clean_channel = channel.strip()
     if clean_channel.lower() in generic_channels:
         clean_channel = ""
     else:
@@ -76,34 +82,86 @@ def clean_song_metadata(title_raw: str, artist_raw: str = "", channel_raw: str =
         clean_channel = re.sub(r'\s+Official$', '', clean_channel, flags=re.IGNORECASE).strip()
         clean_channel = re.sub(r'\s+Oficial$', '', clean_channel, flags=re.IGNORECASE).strip()
 
-    parsed_artist = artist if (artist and artist.lower() not in generic_channels) else clean_channel
+    clean_artist = artist.strip() if (artist and artist.lower() not in generic_channels) else ""
 
-    # 5. Check if title contains separator (e.g. "Artist - Song", "Artist – Song", "Artist — Song")
-    sep_match = re.search(r'\s+[-–—:|]\s+', title)
-    if sep_match:
-        parts = re.split(r'\s+[-–—:|]\s+', title, maxsplit=1)
-        part_left = parts[0].strip()
-        part_right = parts[1].strip()
-
-        # Remove quotes around song title if any: e.g. Artist - "Song"
-        part_right = re.sub(r'^["\'«](.*)["\'»]$', r'\1', part_right).strip()
-
-        for pat in noise_patterns:
-            part_right = re.sub(pat, '', part_right, flags=re.IGNORECASE).strip()
-
-        if part_left and part_right:
-            parsed_artist = part_left
-            parsed_title = part_right
+    if clean_artist and title:
+        # If title starts or ends with artist + separator, strip the redundant artist
+        prefix_match = re.match(r'^(?:' + re.escape(clean_artist) + r')\s+[-–—]\s+', title, re.IGNORECASE)
+        if prefix_match:
+            title = title[prefix_match.end():].strip()
         else:
-            parsed_title = title
+            suffix_match = re.search(r'\s+[-–—]\s+(?:' + re.escape(clean_artist) + r')$', title, re.IGNORECASE)
+            if suffix_match:
+                title = title[:suffix_match.start()].strip()
+        parsed_title = title
+        for pat in noise_patterns:
+            parsed_title = re.sub(pat, '', parsed_title, flags=re.IGNORECASE).strip()
+        parsed_title = re.sub(r'^["\'«](.*)["\'»]$', r'\1', parsed_title).strip()
+        return parsed_title or "Canción", clean_artist
+
+    # 5. Handle pipe separators '|' (e.g. 'LA GRACIOSA - Quevedo ft. Elvis Crespo | EL BAIFO' or 'DESPUES DE TI | Kapo, Feid')
+    if ' | ' in title:
+        pipe_parts = [p.strip() for p in title.split(' | ') if p.strip()]
+        if len(pipe_parts) == 2:
+            p0, p1 = pipe_parts[0], pipe_parts[1]
+            if (' - ' in p0 or ' – ' in p0 or ' — ' in p0):
+                title = p0  # Part before pipe contains the full 'Song - Artist' or 'Artist - Song'
+            elif clean_channel and clean_channel.lower() in p1.lower():
+                title = p0
+                if not clean_artist:
+                    clean_artist = p1
+            elif any(feat in p1.lower() for feat in ['feat', 'ft.', '&', ' y ', ' x ', ',']):
+                title = p0
+                if not clean_artist:
+                    clean_artist = p1
+            else:
+                title = p0
+
+    # 6. Handle dash separator ' - '
+    dash_match = re.search(r'\s+[-–—]\s+', title)
+    if dash_match:
+        parts = re.split(r'\s+[-–—]\s+', title, maxsplit=1)
+        left = parts[0].strip()
+        right = parts[1].strip()
+
+        right = re.sub(r'^["\'«](.*)["\'»]$', r'\1', right).strip()
+        for pat in noise_patterns:
+            right = re.sub(pat, '', right, flags=re.IGNORECASE).strip()
+
+        # Determine if Left is Artist and Right is Title, OR Left is Title and Right is Artist
+        right_is_artist = False
+        left_is_artist = False
+
+        if clean_channel:
+            c_low = clean_channel.lower()
+            if c_low in right.lower() and c_low not in left.lower():
+                right_is_artist = True
+            elif c_low in left.lower() and c_low not in right.lower():
+                left_is_artist = True
+
+        if not right_is_artist and not left_is_artist:
+            feat_re = r'\b(?:ft\.?|feat\.?|featuring)\b'
+            has_feat_right = bool(re.search(feat_re, right, re.IGNORECASE))
+            has_feat_left = bool(re.search(feat_re, left, re.IGNORECASE))
+            if has_feat_right and not has_feat_left:
+                right_is_artist = True
+            elif has_feat_left and not has_feat_right:
+                left_is_artist = True
+
+        if right_is_artist:
+            parsed_title = left
+            parsed_artist = right
+        else:
+            parsed_title = right
+            parsed_artist = left
     else:
         parsed_title = title
+        parsed_artist = clean_artist or clean_channel or "Desconocido"
 
-    if not parsed_artist or parsed_artist.lower() in generic_channels:
-        parsed_artist = clean_channel or "Desconocido"
+    if clean_artist:
+        parsed_artist = clean_artist
 
     parsed_title = re.sub(r'^["\'«](.*)["\'»]$', r'\1', parsed_title).strip()
-
     return parsed_title or "Canción", parsed_artist or "Desconocido"
 
 async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
@@ -148,8 +206,8 @@ async def search_youtube(query: str, limit: int = 5) -> List[Dict[str, Any]]:
                 raw_channel = data.get("uploader") or data.get("channel") or data.get("uploader_id") or "Desconocido"
                 clean_title, clean_artist = clean_song_metadata(raw_title, channel_raw=raw_channel)
                 duration = data.get("duration")
-                # Reject tracks under 30s or over 600s (10 minutes)
-                if duration is not None and (duration < 30 or duration > 600):
+                # Reject playlists, livestreams, and tracks under 60s (1 min) or over 600s (10 minutes)
+                if not duration or duration < 60 or duration > 600:
                     continue
                 
                 # Thumbnail fallback ladder
@@ -188,7 +246,8 @@ def load_trending_cache() -> Dict[str, Dict[str, Any]]:
         "global": {"tracks": [], "last_fetched": 0},
         "los40": {"tracks": [], "last_fetched": 0},
         "spotify_es": {"tracks": [], "last_fetched": 0},
-        "spotify_global": {"tracks": [], "last_fetched": 0}
+        "spotify_global": {"tracks": [], "last_fetched": 0},
+        "pop_rock_es": {"tracks": [], "last_fetched": 0}
     }
     if TRENDING_CACHE_FILE.exists():
         try:
@@ -291,6 +350,209 @@ async def fetch_spotify_chart(chart_type: str = "es") -> List[Tuple[str, str]]:
         logger.error(f"Error scraping Spotify chart ({chart_type}): {e}")
         return []
 
+POP_ROCK_ES_CLASSICS_POOL: List[Tuple[str, str]] = [
+    # --- 1985 - 1989 ---
+    ("Hombres G", "Devuélveme a mi chica"),
+    ("Hombres G", "Marta tiene un marcapasos"),
+    ("Hombres G", "Voy a pasármelo bien"),
+    ("Hombres G", "Venezia"),
+    ("Hombres G", "Te quiero"),
+    ("Duncan Dhu", "En algún lugar"),
+    ("Duncan Dhu", "Cien gaviotas"),
+    ("Duncan Dhu", "Jardín de rosas"),
+    ("Duncan Dhu", "Una calle de París"),
+    ("El Último de la Fila", "Insurrección"),
+    ("El Último de la Fila", "Querida Milagros"),
+    ("El Último de la Fila", "Ya no danzo al son de los tambores"),
+    ("El Último de la Fila", "Aviones plateados"),
+    ("Mecano", "Hijo de la luna"),
+    ("Mecano", "Mujer contra mujer"),
+    ("Mecano", "Me cuesta tanto olvidarte"),
+    ("Mecano", "La fuerza del destino"),
+    ("Mecano", "No hay marcha en Nueva York"),
+    ("Mecano", "Cruz de navajas"),
+    ("Mecano", "Ay qué pesado"),
+    ("Nacha Pop", "Lucha de gigantes"),
+    ("Nacha Pop", "Desordenada habitación"),
+    ("Nacha Pop", "No se acaban las calles"),
+    ("Radio Futura", "Escuela de calor"),
+    ("Radio Futura", "A cara o cruz"),
+    ("Radio Futura", "Paseo con la negra flor"),
+    ("Radio Futura", "37 grados"),
+    ("Gabinete Caligari", "Camino Soria"),
+    ("Gabinete Caligari", "La sangre de tu tristeza"),
+    ("Gabinete Caligari", "Suite nupcial"),
+    ("Gabinete Caligari", "Al calor del amor en un bar"),
+    ("Danza Invisible", "Sabor de amor"),
+    ("Danza Invisible", "Reina del Caribe"),
+    ("Danza Invisible", "Sin aliento"),
+    ("La Guardia", "Mil calles llevan hacia ti"),
+    ("La Guardia", "El blues de la nacional II"),
+    ("Los Ronaldos", "No puedo vivir sin ti"),
+    ("Los Ronaldos", "Adiós papá"),
+    ("Los Ronaldos", "Si os vais..."),
+    ("Los Rebeldes", "Mediterráneo"),
+    ("Los Rebeldes", "Bajo la luz de la luna"),
+    ("Los Rebeldes", "Mescalina"),
+    ("Los Secretos", "No me imagino"),
+    ("Los Secretos", "Quiero beber hasta perder el control"),
+    ("Los Secretos", "Buena chica"),
+    ("La Unión", "Sildavia"),
+    ("La Unión", "Más y más"),
+    ("La Unión", "Maracaibo"),
+    ("Modestia Aparte", "Ojos de hielo"),
+    ("Modestia Aparte", "Chirimoya"),
+    ("Los Refrescos", "Aquí no hay playa"),
+    ("Los Toreros Muertos", "Mi agüita amarilla"),
+    ("Los Toreros Muertos", "Yo no me llamo Javier"),
+    ("Rosendo", "Agradecido"),
+    ("Rosendo", "Loco por incordiar"),
+    ("Rosendo", "Flojos de pantalón"),
+    ("Alaska y Dinarama", "A quién le importa"),
+    ("Alaska y Dinarama", "Ni tú ni nadie"),
+    ("Tam Tam Go!", "Manuel Raquel"),
+    ("Tam Tam Go!", "Spanish Shuffle"),
+    ("Cómplices", "Es por ti"),
+    ("Un Pingüino en mi Ascensor", "Espiando a mi vecina"),
+    ("Loquillo y Los Trogloditas", "Cadillac solitario"),
+    ("Loquillo y Los Trogloditas", "El rompeolas"),
+    ("Loquillo y Los Trogloditas", "Besos robados"),
+    ("Loquillo y Los Trogloditas", "La mataré"),
+    ("Barricada", "No hay tregua"),
+    ("Barricada", "Barrio conflictivo"),
+    ("Barricada", "Pasión por el ruido"),
+    # --- 1990 - 2000 ---
+    ("Héroes del Silencio", "Entre dos tierras"),
+    ("Héroes del Silencio", "Maldito duende"),
+    ("Héroes del Silencio", "La chispa adecuada"),
+    ("Héroes del Silencio", "Sirena varada"),
+    ("Héroes del Silencio", "Nuestros nombres"),
+    ("Héroes del Silencio", "Con nombre de guerra"),
+    ("Héroes del Silencio", "Deshacer el mundo"),
+    ("Héroes del Silencio", "La herida"),
+    ("Los Rodríguez", "Sin documentos"),
+    ("Los Rodríguez", "Dulce condena"),
+    ("Los Rodríguez", "Mucho mejor"),
+    ("Los Rodríguez", "Milonga del marinero y el capitán"),
+    ("Los Rodríguez", "Para no olvidar"),
+    ("Los Rodríguez", "Me estás atrapando otra vez"),
+    ("Los Rodríguez", "Mi enfermedad"),
+    ("Los Secretos", "Pero a tu lado"),
+    ("Los Secretos", "Ojos de gata"),
+    ("Los Secretos", "Mi amiga del corazón"),
+    ("Los Secretos", "Y no amanece"),
+    ("Radio Futura", "Veneno en la piel"),
+    ("Radio Futura", "Corazón de tiza"),
+    ("Gabinete Caligari", "La culpa fue del cha-cha-chá"),
+    ("Gabinete Caligari", "Sólo se vive una vez"),
+    ("La Guardia", "Cuando brille el sol"),
+    ("La Guardia", "Donde nace el río"),
+    ("Celtas Cortos", "20 de abril"),
+    ("Celtas Cortos", "Cuéntame un cuento"),
+    ("Celtas Cortos", "La senda del tiempo"),
+    ("Celtas Cortos", "Tranquilo majete"),
+    ("Celtas Cortos", "Haz turismo"),
+    ("Jarabe de Palo", "La flaca"),
+    ("Jarabe de Palo", "Depende"),
+    ("Jarabe de Palo", "Grita"),
+    ("Jarabe de Palo", "El lado oscuro"),
+    ("Jarabe de Palo", "Agua"),
+    ("Seguridad Social", "Chiquilla"),
+    ("Seguridad Social", "Quiero tener tu presencia"),
+    ("Seguridad Social", "Mi rumba tarumba"),
+    ("Seguridad Social", "Comerranas"),
+    ("Andrés Calamaro", "Flaca"),
+    ("Andrés Calamaro", "Loco"),
+    ("Andrés Calamaro", "Te quiero igual"),
+    ("Andrés Calamaro", "Crímenes perfectos"),
+    ("Andrés Calamaro", "Paloma"),
+    ("Andrés Calamaro", "Alta suciedad"),
+    ("M-Clan", "Llamando a la Tierra"),
+    ("M-Clan", "Quédate a dormir"),
+    ("M-Clan", "Carolina"),
+    ("Fito & Fitipaldis", "Rojitas las orejas"),
+    ("Fito & Fitipaldis", "Trozos de cristal"),
+    ("Fito & Fitipaldis", "Mirando al cielo"),
+    ("Platero y Tú", "El roce de tu cuerpo"),
+    ("Platero y Tú", "Hay poco rock & roll"),
+    ("Platero y Tú", "Mari Madalenas"),
+    ("Platero y Tú", "Juliette"),
+    ("Platero y Tú", "Alucinante"),
+    ("Extremoduro", "So payaso"),
+    ("Extremoduro", "Salir"),
+    ("Extremoduro", "Sucede"),
+    ("Extremoduro", "Jesucristo García"),
+    ("Extremoduro", "Golfa"),
+    ("Extremoduro", "Deltoya"),
+    ("Los Piratas", "Años 80"),
+    ("Los Piratas", "Promesas que no valen nada"),
+    ("Los Piratas", "Mi coco"),
+    ("Los Piratas", "El mundo de Wayne"),
+    ("Joaquín Sabina", "19 días y 500 noches"),
+    ("Joaquín Sabina", "Y nos dieron las diez"),
+    ("Joaquín Sabina", "Contigo"),
+    ("Joaquín Sabina", "Nos sobran los motivos"),
+    ("Joaquín Sabina", "La del pirata cojo"),
+    ("Antonio Vega", "El sitio de mi recreo"),
+    ("Antonio Vega", "Se dejaba llevar por ti"),
+    ("Antonio Vega", "Esperando nada"),
+    ("Mikel Erentxun", "A un minuto de ti"),
+    ("Mikel Erentxun", "Jugando con el tiempo"),
+    ("Revólver", "El roce de tu piel"),
+    ("Revólver", "Si es tan solo amor"),
+    ("Revólver", "Dentro de ti"),
+    ("Revólver", "No va más"),
+    ("Tam Tam Go!", "Atrapados en la red"),
+    ("Tam Tam Go!", "Espaldas mojadas"),
+    ("Modestia Aparte", "Cosas de la edad"),
+    ("Modestia Aparte", "Trapos sucios, platos rotos y ternura"),
+    ("Barricada", "En blanco y negro"),
+    ("Barricada", "Animal caliente"),
+    ("Barricada", "Oveja negra"),
+    ("La Oreja de Van Gogh", "Cuéntame al oído"),
+    ("La Oreja de Van Gogh", "El 28"),
+    ("La Oreja de Van Gogh", "Soñaré"),
+    ("La Oreja de Van Gogh", "La playa"),
+    ("La Oreja de Van Gogh", "Dile al sol"),
+    ("Amaral", "Cómo hablar"),
+    ("Amaral", "Rosita"),
+    ("Amaral", "No sé qué hacer con mi vida"),
+    ("Dover", "Serenade"),
+    ("Dover", "Devil Came to Me"),
+    ("Dover", "King George"),
+    ("Presuntos Implicados", "Cómo hemos cambiado"),
+    ("Los Enemigos", "Septiembre"),
+    ("Los Enemigos", "Desde el jergón"),
+    ("Los Enemigos", "La cuenta atrás"),
+    ("El Último de la Fila", "Como un burro amarrado en la puerta del baile"),
+    ("El Último de la Fila", "Mar antiguo"),
+    ("El Último de la Fila", "Canta por mí"),
+    ("Tahúres Zurdos", "Tocaré"),
+    ("Tahúres Zurdos", "Ella"),
+    ("Los DelTonos", "Escucha"),
+    ("Ella Baila Sola", "Lo echamos a suertes"),
+    ("Ella Baila Sola", "Amores de barra"),
+    ("Ella Baila Sola", "Cuando los sapos bailen flamenco"),
+    ("La Unión", "Ella es un volcán"),
+    ("Seguridad Social", "Me siento bien")
+]
+
+def get_weekly_pop_rock_classics(limit: int = 40) -> List[Tuple[str, str]]:
+    """
+    Deterministically rotates and selects classic songs each week (based on year and ISO week number).
+    This guarantees:
+    1. During the same week, the exact same curated 40 songs are provided.
+    2. When a new week starts (Monday), a fresh 40-song selection is picked automatically from the master catalog.
+    """
+    now = datetime.now()
+    year, week, _ = now.isocalendar()
+    seed = f"pop_rock_es_{year}_{week}"
+    
+    rng = random.Random(seed)
+    pool = list(POP_ROCK_ES_CLASSICS_POOL)
+    rng.shuffle(pool)
+    return pool[:limit]
+
 async def fetch_single_yt_track(artist: str, song: str, rank: int, sem: Optional[asyncio.Semaphore] = None, custom_channel: str = "LOS40 España") -> Optional[Dict[str, Any]]:
     query = f"{artist} {song} video oficial"
     search_target = f"ytsearch1:{query}"
@@ -307,7 +569,7 @@ async def fetch_single_yt_track(artist: str, song: str, rank: int, sem: Optional
                             data = json.loads(line)
                             v_id = data.get("id", "")
                             duration = data.get("duration")
-                            if duration and (duration < 30 or duration > 600):
+                            if not duration or duration < 60 or duration > 600:
                                 continue
                             clean_title, clean_artist = clean_song_metadata(song, artist_raw=artist)
                             return {
@@ -366,6 +628,8 @@ async def get_trending_tracks_with_meta(limit: int = 40, region: str = "es", for
         clean_region = "spotify_es"
     elif region_lower in ["spotify_global", "spotify-global", "spotify"]:
         clean_region = "spotify_global"
+    elif region_lower in ["pop_rock_es", "pop-rock-es", "poprock", "pop_rock", "pop_rock_espana", "pop_rock_español"]:
+        clean_region = "pop_rock_es"
     elif region_lower == "global":
         clean_region = "global"
     else:
@@ -378,6 +642,24 @@ async def get_trending_tracks_with_meta(limit: int = 40, region: str = "es", for
     # If cached tracks exist and cache is NOT expired, return cached immediately
     if cache_entry["tracks"] and not is_expired and not force_refresh:
         return cache_entry["tracks"], last_fetched, False
+
+    if clean_region == "pop_rock_es":
+        items_to_search = get_weekly_pop_rock_classics(limit=limit)
+        sem = asyncio.Semaphore(10)
+        tasks = [fetch_single_yt_track(a, s, i + 1, sem=sem, custom_channel="Pop Rock Español (1985-2000)") for i, (a, s) in enumerate(items_to_search)]
+        search_results = await asyncio.gather(*tasks, return_exceptions=True)
+        pop_rock_results = [r for r in search_results if isinstance(r, dict) and r]
+        if pop_rock_results:
+            TRENDING_CACHE["pop_rock_es"] = {
+                "tracks": pop_rock_results,
+                "last_fetched": now
+            }
+            save_trending_cache()
+            return pop_rock_results, now, False
+
+        if cache_entry["tracks"]:
+            logger.warning("Pop Rock Español list search failed; returning cached tracks.")
+            return cache_entry["tracks"], last_fetched, is_expired
 
     if clean_region == "los40":
         chart = await fetch_los40_official_chart()
@@ -434,8 +716,8 @@ async def get_trending_tracks_with_meta(limit: int = 40, region: str = "es", for
         duration = track.get("duration") or 0
         title_lower = (track.get("title") or "").lower()
 
-        # Filter out tracks under 30s or over 600s (10 minutes)
-        if duration > 0 and (duration < 30 or duration > 600):
+        # Reject playlists, livestreams, and tracks under 60s (1 min) or over 600s (10 minutes)
+        if not duration or duration < 60 or duration > 600:
             continue
 
         # Filter out mix keywords
@@ -646,6 +928,10 @@ async def process_download_task(task_id: str, url: str, title: Optional[str] = N
                 task_info["speed"] = "0KiB/s"
                 task_info["eta"] = "00:00"
                 task_info["filename"] = filename
+                try:
+                    task_info["size_bytes"] = target_filepath.stat().st_size
+                except Exception:
+                    task_info["size_bytes"] = 5000000
 
                 # Invalidate library cache so the track displays instantly
                 try:

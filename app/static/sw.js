@@ -1,14 +1,14 @@
-const CACHE_NAME = 'music-app-v1.5.0';
-const STATIC_CACHE = 'music-static-v1.5.0';
-const IMAGE_CACHE = 'music-images-v1.5.0';
+const CACHE_NAME = 'music-app-v2.0.5';
+const STATIC_CACHE = 'music-static-v2.0.5';
+const IMAGE_CACHE = 'music-images-v2.0.5';
 
 const PRECACHE_ASSETS = [
-  '/static/css/style.css?v=1.5.0',
-  '/static/js/app.js?v=1.5.0',
-  '/static/js/player.js?v=1.5.0',
-  '/static/js/rclone.js?v=1.5.0',
-  '/static/favicon.svg?v=1.5.0',
-  '/manifest.json?v=1.5.0'
+  '/static/css/style.css?v=2.0.5',
+  '/static/js/app.js?v=2.0.5',
+  '/static/js/player.js?v=2.0.5',
+  '/static/js/rclone.js?v=2.0.5',
+  '/static/favicon.svg?v=2.0.5',
+  '/manifest.json?v=2.0.5'
 ];
 
 self.addEventListener('install', event => {
@@ -37,11 +37,6 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
 
-  // Audio streams must never be intercepted by SW cache (Range requests & chunk streams)
-  if (url.pathname.startsWith('/api/stream') || url.searchParams.has('v=')) {
-    return;
-  }
-
   // Cover image caching (Local extracted covers & Deezer / YT artwork)
   if (url.pathname.startsWith('/api/library/cover') || 
       url.hostname.includes('dzcdn.net') || 
@@ -65,9 +60,8 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // API endpoints: Always live network
-  if (url.pathname.startsWith('/api/')) {
-    event.respondWith(fetch(event.request));
+  // ALL other API endpoints, audio streams, docs: NEVER intercept, let browser handle directly
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/docs') || url.pathname.startsWith('/openapi') || url.searchParams.has('v=')) {
     return;
   }
 
@@ -79,18 +73,17 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Static Assets (JS, CSS, SVGs, Fonts): Stale-While-Revalidate
+  // Static Assets (JS, CSS, SVGs, Fonts): Network First, fallback to cache
   event.respondWith(
-    caches.open(STATIC_CACHE).then(async cache => {
-      const cachedResponse = await cache.match(event.request);
-      const fetchPromise = fetch(event.request).then(networkResponse => {
-        if (networkResponse && networkResponse.status === 200) {
-          cache.put(event.request, networkResponse.clone());
-        }
-        return networkResponse;
-      }).catch(() => cachedResponse);
-
-      return cachedResponse || fetchPromise;
+    fetch(event.request).then(networkResponse => {
+      if (networkResponse && networkResponse.status === 200) {
+        const clone = networkResponse.clone();
+        caches.open(STATIC_CACHE).then(cache => cache.put(event.request, clone));
+      }
+      return networkResponse;
+    }).catch(async () => {
+      const cache = await caches.open(STATIC_CACHE);
+      return (await cache.match(event.request)) || (await cache.match('/'));
     })
   );
 });

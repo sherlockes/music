@@ -81,11 +81,23 @@ def get_mount_status() -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error running rclone listremotes: {e}")
 
+    # Determine active remote
+    active_remote = "Ninguno"
+    clean_env_remote = RCLONE_REMOTE.strip() if RCLONE_REMOTE else ""
+    if clean_env_remote:
+        if not clean_env_remote.endswith(":"):
+            clean_env_remote = f"{clean_env_remote}:"
+        if clean_env_remote in remotes:
+            active_remote = clean_env_remote
+
+    if active_remote == "Ninguno" and remotes:
+        active_remote = remotes[0]
+
     return {
         "mount_path": str(MUSIC_DIR),
         "is_mounted": is_mounted,
         "mount_type": mount_type,
-        "active_remote": RCLONE_REMOTE or (remotes[0] if remotes else "Ninguno"),
+        "active_remote": active_remote,
         "available_remotes": remotes,
         "config_text": get_rclone_config_text(),
         "storage": usage_info
@@ -173,15 +185,13 @@ def check_and_auto_remount() -> bool:
     """
     try:
         status = get_mount_status()
-        target_remote = status.get("active_remote") or RCLONE_REMOTE
-        
-        # If no remotes exist in config, nothing to mount
-        if not target_remote or target_remote == "Ninguno":
-            available = status.get("available_remotes", [])
-            if available:
-                target_remote = available[0]
-            else:
-                return False
+        available = status.get("available_remotes", [])
+        if not available:
+            return False
+
+        target_remote = status.get("active_remote")
+        if not target_remote or target_remote == "Ninguno" or target_remote not in available:
+            target_remote = available[0]
 
         is_mounted = status.get("is_mounted", False)
 

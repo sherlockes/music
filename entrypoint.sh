@@ -7,11 +7,15 @@ echo "=== Starting Music App Container ==="
 mkdir -p /mnt/cloud_music
 mkdir -p /root/.config/rclone
 
-# Determine remote to mount (default: cloud_music:)
-REMOTE_TO_MOUNT="${RCLONE_REMOTE:-cloud_music:}"
+# Determine remote to mount (use RCLONE_REMOTE if valid, or auto-detect first available remote in rclone.conf)
+AVAILABLE_REMOTES=$(rclone listremotes 2>/dev/null | tr -d ' ' || true)
+FIRST_REMOTE=$(echo "$AVAILABLE_REMOTES" | head -n 1)
 
-if [ -n "$REMOTE_TO_MOUNT" ] && [[ "$REMOTE_TO_MOUNT" != *: ]]; then
-    REMOTE_TO_MOUNT="${REMOTE_TO_MOUNT}:"
+REMOTE_TO_MOUNT=""
+if [ -n "$RCLONE_REMOTE" ] && echo "$AVAILABLE_REMOTES" | grep -q "^${RCLONE_REMOTE%%:*}:"; then
+    REMOTE_TO_MOUNT="${RCLONE_REMOTE%%:*}:"
+elif [ -n "$FIRST_REMOTE" ]; then
+    REMOTE_TO_MOUNT="$FIRST_REMOTE"
 fi
 
 echo "[Clean Startup] Ensuring /mnt/cloud_music is unmounted before local cleanup..."
@@ -30,31 +34,28 @@ fi
 # Auto-mount Rclone remote
 if [ -n "$REMOTE_TO_MOUNT" ]; then
     REMOTE_NAME="${REMOTE_TO_MOUNT%%:*}"
-    echo "[Rclone] Checking if remote '${REMOTE_NAME}:' exists in rclone.conf..."
-    if rclone listremotes 2>/dev/null | grep -q "^${REMOTE_NAME}:"; then
-        echo "[Rclone] Mounting '${REMOTE_NAME}:' to /mnt/cloud_music..."
-        nohup rclone mount "${REMOTE_NAME}:" /mnt/cloud_music \
-            --vfs-cache-mode full \
-            --vfs-cache-max-age 24h \
-            --vfs-cache-poll-interval 1m \
-            --vfs-read-ahead 128M \
-            --buffer-size 32M \
-            --timeout 30s \
-            --contimeout 15s \
-            --dir-cache-time 15m \
-            --attr-timeout 1s \
-            --allow-other \
-            --allow-non-empty >/tmp/rclone.log 2>&1 &
-        
-        sleep 2
-        if grep -E "/mnt/cloud_music (fuse|rclone)" /proc/mounts >/dev/null 2>&1; then
-            echo "[Rclone] Successfully mounted '${REMOTE_NAME}:' on /mnt/cloud_music (Cloud VFS Active)."
-        else
-            echo "[Rclone] Mount process backgrounded. Check /tmp/rclone.log"
-        fi
+    echo "[Rclone] Auto-mounting '${REMOTE_NAME}:' to /mnt/cloud_music..."
+    nohup rclone mount "${REMOTE_NAME}:" /mnt/cloud_music \
+        --vfs-cache-mode full \
+        --vfs-cache-max-age 24h \
+        --vfs-cache-poll-interval 1m \
+        --vfs-read-ahead 128M \
+        --buffer-size 32M \
+        --timeout 30s \
+        --contimeout 15s \
+        --dir-cache-time 15m \
+        --attr-timeout 1s \
+        --allow-other \
+        --allow-non-empty >/tmp/rclone.log 2>&1 &
+    
+    sleep 2
+    if grep -E "/mnt/cloud_music (fuse|rclone)" /proc/mounts >/dev/null 2>&1; then
+        echo "[Rclone] Successfully mounted '${REMOTE_NAME}:' on /mnt/cloud_music (Cloud VFS Active)."
     else
-        echo "[Rclone] Remote '${REMOTE_NAME}:' not found in rclone.conf yet. Storage remains local until mounted."
+        echo "[Rclone] Mount process backgrounded. Check /tmp/rclone.log"
     fi
+else
+    echo "[Rclone] No remotes found in rclone.conf. Storage remains local until a remote is configured."
 fi
 
 # Start FastAPI application with Uvicorn
