@@ -21,10 +21,23 @@ services:
       - .:/app
       - ./rclone:/root/.config/rclone
       - ./data/cloud_music:/mnt/cloud_music:rshared
+      - ./data/navidrome:/var/lib/navidrome
     environment:
       - TZ=Europe/Madrid
       - MUSIC_DIR=/mnt/cloud_music
       - RCLONE_CONFIG=/root/.config/rclone/rclone.conf
       - RCLONE_REMOTE=${RCLONE_REMOTE:-Sherlockes78_GD:}
       - RCLONE_AUTO_MOUNT=${RCLONE_AUTO_MOUNT:-true}
+      - ND_MUSICFOLDER=/var/lib/navidrome/music
+      - ND_DATAFOLDER=/var/lib/navidrome
+      - ND_CACHEFOLDER=/var/lib/navidrome/cache
+      - ND_PORT=4533
+      - ND_ADDRESS=0.0.0.0
+      - ND_FOLLOWSYMLINKS=true
+      - ND_SCANINTERVAL=15m
+      - ND_LOGLEVEL=info
+      - ND_SESSIONTIMEOUT=48h
+      - ND_ENABLETRANSCODINGCONFIG=true
+      - ND_DEFAULTTHEME=dark
+      - ND_BASEURL=
     restart: unless-stopped

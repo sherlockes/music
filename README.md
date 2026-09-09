@@ -1,4 +1,4 @@
-# 🎵 Music Cloud App (v2.0.6)
+# 🎵 Music Cloud App (v2.0.7)
 
 > **Buscador de Artistas y Discografía, Descargador de YouTube y Reproductor Cloud con Rclone & WireGuard VPN.**
 
@@ -6,8 +6,14 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 
 ---
 
-## ✨ Novedades de la Versión 2.0 (v2.0.0 – v2.0.6)
+## ✨ Novedades de la Versión 2.0 (v2.0.0 – v2.0.7)
 
+* 📻 **Servidor Navidrome Integrado (Subsonic & OpenSubsonic - v2.0.7)**:
+  * **Transmisión Subsonic sin abrir puertos**: Servidor Navidrome integrado en la pila Docker y expuesto internamente en la red `proxy` (`http://wg_music_tunnel:4533`) para su publicación segura mediante Nginx Proxy Manager en `musica.tejelonsos.es`.
+  * **Aislamiento de la biblioteca en la nube**: Sincronización automática de enlaces simbólicos que expone **exclusivamente los archivos de audio de la biblioteca** montada en Google Drive (omitiendo por completo carpetas ajenas como `Backups`, `radares`, `strava`, scripts, etc., protegiendo la cuota de la API de Google Drive).
+  * **Sincronización en tiempo real**: Al descargar, renombrar o eliminar canciones desde la aplicación web, la biblioteca de Navidrome se actualiza automáticamente.
+  * **Compatibilidad universal con clientes móviles**: Conexión directa desde clientes Subsonic para smartphone y escritorio como **Symfonium** (Android), **Amperfy / Substreamer** (iOS) y **Feishin** (Windows/Linux/macOS) usando `https://musica.tejelonsos.es`.
+  * **Acceso directo en la UI**: Enlaces directos en la barra de navegación, menú móvil y panel de Ajustes con monitorización de estado y botón de sincronización manual.
 * 🔋 **Reproducción Continua en Segundo Plano (Mobile PWA & Screen-Off Fix - v2.0.6)**:
   * **Solución definitiva al corte de ~0.5s**: Corregido el problema crítico por el cual al terminar una canción y auto-avanzar a la siguiente, la reproducción se detenía a los pocos instantes en dispositivos móviles con pantalla apagada o en segundo plano.
   * **Reanudación automática ante pausas involuntarias**: Distinción estricta entre pausas manuales del usuario y pausas forzadas por ahorro de batería del SO o micro-desconexiones de red, manteniendo siempre el estado de reproducción y reintentando la reproducción de forma transparente.

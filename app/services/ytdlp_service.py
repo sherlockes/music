@@ -933,10 +933,11 @@ async def process_download_task(task_id: str, url: str, title: Optional[str] = N
                 except Exception:
                     task_info["size_bytes"] = 5000000
 
-                # Invalidate library cache so the track displays instantly
+                # Invalidate library cache so the track displays instantly and sync to Navidrome
                 try:
-                    from app.services.library_service import invalidate_library_cache
+                    from app.services.library_service import invalidate_library_cache, sync_navidrome_track
                     invalidate_library_cache()
+                    sync_navidrome_track(filename, action="add")
                 except Exception:
                     pass
 

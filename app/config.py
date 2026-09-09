@@ -15,3 +15,13 @@ except Exception:
 
 # Supported audio extensions
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".flac", ".wav", ".ogg", ".opus", ".aac"}
+
+# Navidrome configuration paths
+NAVIDROME_DATA_DIR = Path(os.getenv("NAVIDROME_DATA_DIR", "/var/lib/navidrome"))
+NAVIDROME_MUSIC_DIR = Path(os.getenv("NAVIDROME_MUSIC_DIR", "/var/lib/navidrome/music"))
+
+try:
+    NAVIDROME_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    NAVIDROME_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+except Exception:
+    pass

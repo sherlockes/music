@@ -16,7 +16,7 @@ try:
 except ImportError:
     mutagen = None
 
-from app.config import MUSIC_DIR, AUDIO_EXTENSIONS
+from app.config import MUSIC_DIR, AUDIO_EXTENSIONS, NAVIDROME_MUSIC_DIR
 
 logger = logging.getLogger("library_service")
 
@@ -234,12 +234,89 @@ def extract_cover_bytes(filename: str) -> Optional[Tuple[bytes, str]]:
     _COVER_CACHE[filename] = (mtime, res)
     return res
 
+def sync_navidrome_track(filename: str, action: str = "add", old_filename: Optional[str] = None):
+    """
+    Keep Navidrome music directory symlinks strictly in sync with the library.
+    Actions: 'add', 'delete', 'rename'
+    """
+    if not NAVIDROME_MUSIC_DIR.exists():
+        try:
+            NAVIDROME_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return
+
+    try:
+        if action == "add":
+            src = MUSIC_DIR / filename
+            dst = NAVIDROME_MUSIC_DIR / filename
+            if src.exists() and src.is_file():
+                if dst.is_symlink() or dst.exists():
+                    dst.unlink(missing_ok=True)
+                dst.symlink_to(src)
+        elif action == "delete":
+            dst = NAVIDROME_MUSIC_DIR / filename
+            if dst.is_symlink() or dst.exists():
+                dst.unlink(missing_ok=True)
+        elif action == "rename":
+            if old_filename:
+                old_dst = NAVIDROME_MUSIC_DIR / old_filename
+                if old_dst.is_symlink() or old_dst.exists():
+                    old_dst.unlink(missing_ok=True)
+            src = MUSIC_DIR / filename
+            dst = NAVIDROME_MUSIC_DIR / filename
+            if src.exists() and src.is_file():
+                if dst.is_symlink() or dst.exists():
+                    dst.unlink(missing_ok=True)
+                dst.symlink_to(src)
+    except Exception as e:
+        logger.debug(f"[Navidrome Sync] Error updating track {filename}: {e}")
+
+def sync_all_navidrome_tracks() -> int:
+    """
+    Scan MUSIC_DIR and ensure symlinks exist in NAVIDROME_MUSIC_DIR for all audio files.
+    Cleans up broken symlinks. Returns the count of active synced tracks.
+    """
+    if not NAVIDROME_MUSIC_DIR.exists():
+        try:
+            NAVIDROME_MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return 0
+
+    # 1. Remove dangling symlinks
+    try:
+        for item in list(NAVIDROME_MUSIC_DIR.iterdir()):
+            if item.is_symlink() and not item.exists():
+                try:
+                    item.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    # 2. Create symlinks for all valid audio files directly in MUSIC_DIR
+    synced_count = 0
+    if MUSIC_DIR.exists():
+        for filepath in MUSIC_DIR.glob("*"):
+            if filepath.is_file() and filepath.suffix.lower() in AUDIO_EXTENSIONS:
+                dst = NAVIDROME_MUSIC_DIR / filepath.name
+                try:
+                    if not dst.exists():
+                        if dst.is_symlink():
+                            dst.unlink(missing_ok=True)
+                        dst.symlink_to(filepath)
+                    synced_count += 1
+                except Exception as e:
+                    logger.debug(f"[Navidrome Sync] Failed symlinking {filepath.name}: {e}")
+
+    return synced_count
+
 def delete_track(filename: str) -> bool:
     """Delete a track from MUSIC_DIR and clear caches."""
     filepath = MUSIC_DIR / filename
     _FILE_META_CACHE.pop(filename, None)
     _COVER_CACHE.pop(filename, None)
     invalidate_library_cache()
+    sync_navidrome_track(filename, action="delete")
     if filepath.exists() and filepath.is_file():
         filepath.unlink()
         return True
@@ -349,6 +426,8 @@ def update_track_metadata_and_rename(old_filename: str, new_title: str, new_arti
     # 3. Update all playlists and app data
     from app.services.playlist_service import update_track_filename_in_playlists_and_records, get_track_owners
     update_track_filename_in_playlists_and_records(old_filename, final_filename, clean_title, clean_artist)
+    if final_filename != old_filename:
+        sync_navidrome_track(final_filename, action="rename", old_filename=old_filename)
 
     # 4. Extract and return updated metadata
     meta = get_track_metadata(final_filepath)
@@ -451,6 +530,7 @@ def enforce_cloud_storage_limit(limit_bytes: Optional[int] = None) -> Dict[str, 
                 break
             try:
                 track["path"].unlink()
+                sync_navidrome_track(track["filename"], action="delete")
                 total_size -= track["size"]
                 freed_bytes += track["size"]
                 deleted_count += 1

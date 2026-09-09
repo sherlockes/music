@@ -3834,6 +3834,8 @@ class MusicApp {
             if (limitSelect) limitSelect.value = this.storageManager.localLimit.toString();
         }
 
+        this.loadNavidromeStatus();
+
         try {
             const res = await this.customFetch('/api/storage/cloud_settings');
             const data = await res.json();
@@ -3929,6 +3931,66 @@ class MusicApp {
             this.loadStorageView();
         } catch (err) {
             this.showToast('Error ejecutando limpieza en la nube', 'error');
+        }
+    }
+
+    async loadNavidromeStatus() {
+        const badge = document.getElementById('navidrome-status-badge');
+        const countEl = document.getElementById('navidrome-track-count');
+        try {
+            const res = await this.customFetch('/api/navidrome/status');
+            const data = await res.json();
+            if (countEl) {
+                countEl.innerText = `${data.synced_tracks || 0} pistas`;
+            }
+            if (badge) {
+                if (data.running) {
+                    badge.className = 'px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 flex items-center gap-1.5 shadow';
+                    badge.innerHTML = '<span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span> Activo :4533';
+                } else {
+                    badge.className = 'px-3 py-1 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1.5 shadow';
+                    badge.innerHTML = '<span class="w-2 h-2 rounded-full bg-amber-400"></span> Iniciando...';
+                }
+            }
+        } catch (err) {
+            if (countEl) countEl.innerText = 'Consultando...';
+        }
+    }
+
+    async rescanNavidrome() {
+        const btn = document.getElementById('navidrome-rescan-btn');
+        if (btn) {
+            btn.disabled = true;
+            btn.innerHTML = `
+                <svg class="animate-spin w-3.5 h-3.5 text-white inline-block mr-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+                </svg> Sincronizando...`;
+        }
+        try {
+            const res = await this.customFetch('/api/navidrome/rescan', { method: 'POST' });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                this.showToast(`Navidrome sincronizado: ${data.synced_tracks} pistas listas para streaming`, 'success');
+                const countEl = document.getElementById('navidrome-track-count');
+                if (countEl) countEl.innerText = `${data.synced_tracks} pistas`;
+                this.loadNavidromeStatus();
+            } else {
+                this.showToast(data.detail || 'Error al sincronizar Navidrome', 'warning');
+            }
+        } catch (err) {
+            this.showToast('Error conectando con el servicio Navidrome', 'error');
+        } finally {
+            if (btn) {
+                btn.disabled = false;
+                btn.innerHTML = `
+                    <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-indigo-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="23 4 23 10 17 10"></polyline>
+                        <polyline points="1 20 1 14 7 14"></polyline>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+                    </svg>
+                    <span>Sincronizar Pistas</span>`;
+            }
         }
     }
 }

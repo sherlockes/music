@@ -58,6 +58,36 @@ else
     echo "[Rclone] No remotes found in rclone.conf. Storage remains local until a remote is configured."
 fi
 
+# Sync library audio files to Navidrome music folder
+echo "[Navidrome] Preparing library symlinks in /var/lib/navidrome/music..."
+mkdir -p /var/lib/navidrome/music /var/lib/navidrome/cache
+# Remove broken/dangling symlinks
+find /var/lib/navidrome/music -xtype l -delete 2>/dev/null || true
+# Create symlinks for audio files strictly in /mnt/cloud_music (excluding non-music folders)
+for ext in mp3 m4a flac wav ogg opus aac; do
+    for f in /mnt/cloud_music/*."$ext"; do
+        if [ -f "$f" ]; then
+            ln -sf "$f" /var/lib/navidrome/music/ 2>/dev/null || true
+        fi
+    done
+done
+SYNCED_COUNT=$(ls -1 /var/lib/navidrome/music 2>/dev/null | wc -l)
+echo "[Navidrome] Ready: $SYNCED_COUNT library tracks linked for streaming."
+
+# Launch Navidrome music server in background
+if [ -x /usr/local/bin/navidrome ]; then
+    echo "=== Launching Navidrome Server on 0.0.0.0:4533 ==="
+    nohup /usr/local/bin/navidrome \
+        --musicfolder /var/lib/navidrome/music \
+        --datafolder /var/lib/navidrome \
+        --cachefolder /var/lib/navidrome/cache \
+        --port 4533 \
+        --address 0.0.0.0 \
+        --scaninterval 15m >/tmp/navidrome.log 2>&1 &
+    sleep 1
+    echo "[Navidrome] Process backgrounded. Check /tmp/navidrome.log"
+fi
+
 # Start FastAPI application with Uvicorn
 echo "=== Launching FastAPI Server on 0.0.0.0:8000 ==="
 exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

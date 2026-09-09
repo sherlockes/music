@@ -1,14 +1,14 @@
-const CACHE_NAME = 'music-app-v2.0.6';
-const STATIC_CACHE = 'music-static-v2.0.6';
-const IMAGE_CACHE = 'music-images-v2.0.6';
+const CACHE_NAME = 'music-app-v2.0.7';
+const STATIC_CACHE = 'music-static-v2.0.7';
+const IMAGE_CACHE = 'music-images-v2.0.7';
 
 const PRECACHE_ASSETS = [
-  '/static/css/style.css?v=2.0.6',
-  '/static/js/app.js?v=2.0.6',
-  '/static/js/player.js?v=2.0.6',
-  '/static/js/rclone.js?v=2.0.6',
-  '/static/favicon.svg?v=2.0.6',
-  '/manifest.json?v=2.0.6'
+  '/static/css/style.css?v=2.0.7',
+  '/static/js/app.js?v=2.0.7',
+  '/static/js/player.js?v=2.0.7',
+  '/static/js/rclone.js?v=2.0.7',
+  '/static/favicon.svg?v=2.0.7',
+  '/manifest.json?v=2.0.7'
 ];
 
 self.addEventListener('install', event => {

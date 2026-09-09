@@ -39,7 +39,8 @@ from app.services.library_service import (
     extract_cover_bytes,
     delete_track,
     update_track_metadata_and_rename,
-    enforce_cloud_storage_limit
+    enforce_cloud_storage_limit,
+    sync_all_navidrome_tracks
 )
 from app.services.playlist_service import (
     get_all_playlists,
@@ -1326,4 +1327,43 @@ async def api_clean_cloud_storage():
         "deleted_count": stats.get("deleted_count", 0),
         "freed_bytes": stats.get("freed_bytes", 0),
         "total_size_bytes": stats.get("total_size_bytes", 0)
+    }
+
+@app.get("/api/navidrome/status")
+async def api_navidrome_status():
+    """Get Navidrome status, port, url, and count of synced tracks."""
+    import socket
+    from app.config import NAVIDROME_MUSIC_DIR
+    
+    # Check if Navidrome port is responding
+    is_running = False
+    try:
+        with socket.create_connection(("127.0.0.1", 4533), timeout=0.5):
+            is_running = True
+    except Exception:
+        is_running = False
+
+    synced_count = 0
+    if NAVIDROME_MUSIC_DIR.exists():
+        try:
+            synced_count = len([f for f in NAVIDROME_MUSIC_DIR.iterdir() if f.is_file() or f.is_symlink()])
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "running": is_running,
+        "port": 4533,
+        "url": "https://musica.tejelonsos.es",
+        "synced_tracks": synced_count
+    }
+
+@app.post("/api/navidrome/rescan")
+async def api_navidrome_rescan():
+    """Resync all library symlinks to Navidrome."""
+    synced = sync_all_navidrome_tracks()
+    return {
+        "success": True,
+        "synced_tracks": synced,
+        "message": f"Biblioteca de Navidrome sincronizada con {synced} pistas"
     }
