@@ -374,7 +374,7 @@ class AudioPlayer {
         return 0;
     }
 
-    hasSufficientBuffer(minSeconds = 1.5) {
+    hasSufficientBuffer(minSeconds = 2.0) {
         if (!this.audio) return false;
         // Local offline blob has 100% of data locally
         if (this.activeBlob || this.currentBlobUrl) {
@@ -385,7 +385,7 @@ class AudioPlayer {
             return true;
         }
         const ahead = this.getBufferedAhead();
-        return (ahead >= minSeconds) || (this.audio.readyState >= 4);
+        return ahead >= minSeconds;
     }
 
     clearBufferResumeListeners() {
@@ -408,24 +408,26 @@ class AudioPlayer {
 
         if (this._userRequestedPause || !this.isPlaying || !this.audio || this.isChangingTrack) return;
 
-        // If audio already has sufficient buffer, resume right away
-        if (this.hasSufficientBuffer(1.5)) {
-            this.attemptResume();
-            return;
-        }
+        // Never resume synchronously inside a pause/underrun event callback.
+        // Doing so produces an immediate 30-50Hz audio chattering loop ("crispeo").
+        // Enforce a minimum safe delay (600ms) to give the audio engine and incoming network packets
+        // time to build real headroom before unpausing.
+        const safeDelay = Math.max(600, delayMs);
 
         // 1. Listen for canplaythrough
         this._bufferCanPlayThroughHandler = () => {
-            console.log("[AudioPlayer] canplaythrough received during buffer resume, attempting playback...");
-            this.clearBufferResumeListeners();
-            this.attemptResume();
+            if (this.hasSufficientBuffer(2.0)) {
+                console.log("[AudioPlayer] canplaythrough with healthy buffer, resuming...");
+                this.clearBufferResumeListeners();
+                this.attemptResume();
+            }
         };
         this.audio.addEventListener('canplaythrough', this._bufferCanPlayThroughHandler, { once: true });
 
-        // 2. Listen for progress events to resume as soon as buffer has accumulated >= 1.5s
+        // 2. Listen for progress events to resume as soon as buffer has accumulated >= 2.5s
         this._bufferProgressHandler = () => {
-            if (this.hasSufficientBuffer(1.5)) {
-                console.log(`[AudioPlayer] Sufficient buffer reached (${this.getBufferedAhead().toFixed(2)}s), resuming...`);
+            if (this.hasSufficientBuffer(2.5)) {
+                console.log(`[AudioPlayer] Healthy buffer reached (${this.getBufferedAhead().toFixed(2)}s), resuming...`);
                 this.clearBufferResumeListeners();
                 this.attemptResume();
             }
@@ -439,7 +441,7 @@ class AudioPlayer {
                 console.log("[AudioPlayer] Buffer resume timer expired, attempting playback resume...");
                 this.attemptResume();
             }
-        }, delayMs);
+        }, safeDelay);
     }
 
     attemptResume() {
@@ -564,6 +566,14 @@ class AudioPlayer {
 
     updateMediaSessionPosition() {
         if (!('mediaSession' in navigator) || !this.audio || isNaN(this.audio.duration)) return;
+        // In background with screen locked, throttle IPC calls to once every 2.5s to avoid Android system server IPC contention
+        if (document.hidden) {
+            const now = Date.now();
+            if (this._lastMediaSessionPositionUpdate && (now - this._lastMediaSessionPositionUpdate < 2500)) {
+                return;
+            }
+            this._lastMediaSessionPositionUpdate = now;
+        }
         try {
             if ('setPositionState' in navigator.mediaSession) {
                 navigator.mediaSession.setPositionState({
@@ -676,7 +686,7 @@ class AudioPlayer {
                 this.compressorNode.threshold.setTargetAtTime(-12, now, 0.05);
                 this.compressorNode.ratio.setTargetAtTime(4.0, now, 0.05);
                 this.compressorNode.knee.setTargetAtTime(12, now, 0.05);
-                const targetGain = 1.25 * (this.currentTrackGain || 1.0);
+                const targetGain = 1.0 * (this.currentTrackGain || 1.0);
                 this.gainNode.gain.setTargetAtTime(targetGain, now, 0.05);
             } else {
                 this.compressorNode.threshold.setTargetAtTime(0, now, 0.05);
@@ -1622,7 +1632,48 @@ class AudioPlayer {
                     });
                 }
             };
-            tryPlay();
+            // If local offline blob cache, or if screen is visible, or if already has >= 1.5s buffered: start immediately
+            if (isOfflineCache || !document.hidden || this.hasSufficientBuffer(1.5)) {
+                tryPlay();
+            } else {
+                // When starting a network stream in the background (screen locked), buffer a small cushion
+                // (>= 1.5s) before starting playback so it does not starve immediately on the first 26ms frame ("crispeo").
+                let started = false;
+                let safetyTimer = null;
+
+                const startWithCushion = () => {
+                    if (started || this._loadTrackSeq !== seq) return;
+                    started = true;
+                    if (this.audio) {
+                        this.audio.removeEventListener('canplay', onCanPlay);
+                        this.audio.removeEventListener('progress', onProgress);
+                    }
+                    if (safetyTimer) {
+                        clearTimeout(safetyTimer);
+                        safetyTimer = null;
+                    }
+                    tryPlay();
+                };
+
+                const onCanPlay = () => {
+                    if (this.hasSufficientBuffer(1.0)) {
+                        startWithCushion();
+                    }
+                };
+
+                const onProgress = () => {
+                    if (this.hasSufficientBuffer(1.5)) {
+                        startWithCushion();
+                    }
+                };
+
+                this.audio.addEventListener('canplay', onCanPlay, { once: true });
+                this.audio.addEventListener('progress', onProgress);
+
+                safetyTimer = setTimeout(() => {
+                    startWithCushion();
+                }, 800);
+            }
         } else {
             this.isChangingTrack = false;
             this.isLoading = false;
