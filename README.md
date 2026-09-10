@@ -1,4 +1,4 @@
-# 🎵 Music Cloud App (v2.0.7)
+# 🎵 Music Cloud App (v2.1.0)
 
 > **Buscador de Artistas y Discografía, Descargador de YouTube y Reproductor Cloud con Rclone & WireGuard VPN.**
 
@@ -6,8 +6,15 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 
 ---
 
-## ✨ Novedades de la Versión 2.0 (v2.0.0 – v2.0.7)
+## ✨ Novedades de la Versión 2.0 (v2.0.0 – v2.1.0)
 
+* 🔊 **Eliminación Definitiva del Sonido Entrecortado en PWA y Pantalla Bloqueada (v2.1.0)**:
+  * **Solución al entrecorte inicial en segundo plano**: Corregido el problema por el cual al bloquear la pantalla del móvil, la reproducción sufría micro-cortes y sonaba entrecortada durante los primeros segundos del tema.
+  * **Colchón de búfer garantizado al iniciar (`preload="auto"` y espera de 1.5s)**: Al iniciar un tema por streaming sobre red móvil, el reproductor valida que exista un margen mínimo de 1.5 segundos antes de comenzar la emisión audible, evitando que el navegador móvil caiga en el bucle de starvation (reproducir 20ms, esperar paquete, reproducir 20ms).
+  * **Control reactivo de inanición en `waiting` y `stalled`**: El evento `waiting` ahora pausa preventivamente el elemento de audio para permitir la recarga íntegra del colchón de seguridad antes de reanudar, eliminando el tartamudeo.
+  * **Web Audio resiliente (`latencyHint: 'playback'`)**: El grafo de ecualización y limitador se inicializa con búfer de alta latencia y escucha el evento `statechange` para reanudar automáticamente el `AudioContext` en caso de suspensión del sistema operativo en reposo.
+  * **Ahorro de datos y ancho de banda en segundo plano (`visibilitychange`)**: La comprobación periódica de descargas activas (`pollDownloads`) y guardado de estado se pausan mientras la pantalla esté apagada o la app en segundo plano (`document.hidden`), liberando el 100% de la conexión móvil para el streaming continuo de audio.
+  * **Reconexión instantánea al desbloquear**: Al volver al primer plano, el reproductor comprueba y reanuda inmediatamente el flujo y el `AudioContext` si sufrieron retardo en reposo.
 * 📻 **Servidor Navidrome Integrado (Subsonic & OpenSubsonic - v2.0.7)**:
   * **Transmisión Subsonic sin abrir puertos**: Servidor Navidrome integrado en la pila Docker y expuesto internamente en la red `proxy` (`http://wg_music_tunnel:4533`) para su publicación segura mediante Nginx Proxy Manager en `musica.tejelonsos.es`.
   * **Aislamiento de la biblioteca en la nube**: Sincronización automática de enlaces simbólicos que expone **exclusivamente los archivos de audio de la biblioteca** montada en Google Drive (omitiendo por completo carpetas ajenas como `Backups`, `radares`, `strava`, scripts, etc., protegiendo la cuota de la API de Google Drive).

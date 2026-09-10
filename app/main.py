@@ -86,6 +86,7 @@ app = FastAPI(
 async def start_rclone_watchdog():
     async def watchdog_loop():
         logger.info("[Watchdog] Starting Rclone cloud mount watchdog...")
+        await asyncio.sleep(5) # Grace period for entrypoint mount to stabilize
         while True:
             try:
                 await asyncio.to_thread(check_and_auto_remount)
@@ -1028,7 +1029,7 @@ def make_safe_disposition(filename: str) -> str:
     return f'inline; filename="{ascii_filename}"; filename*=UTF-8\'\'{quoted_filename}'
 
 
-@app.get("/api/stream/{filename}")
+@app.api_route("/api/stream/{filename}", methods=["GET", "HEAD"])
 async def api_stream_audio(filename: str, request: Request):
     """
     Stream audio file with full HTTP Range Requests support (206 Partial Content).
@@ -1043,74 +1044,21 @@ async def api_stream_audio(filename: str, request: Request):
     if not filepath.exists() or not filepath.is_file():
         raise HTTPException(status_code=404, detail="Archivo de audio no encontrado")
 
-    file_size = filepath.stat().st_size
     mime_type, _ = mimetypes.guess_type(str(filepath))
     if not mime_type:
         mime_type = "audio/mpeg"
 
     disposition_header = make_safe_disposition(filename)
 
-    range_header = request.headers.get("range")
-    if not range_header:
-        # Standard full file stream response
-        def iterfile():
-            with open(filepath, mode="rb") as f:
-                yield from f
-        return StreamingResponse(
-            iterfile(),
-            media_type=mime_type,
-            headers={
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(file_size),
-                "Content-Disposition": disposition_header,
-                "Cache-Control": "public, max-age=86400"
-            }
-        )
-
-    # Parse HTTP Range Header
-    try:
-        unit, range_str = range_header.strip().split("=")
-        if unit != "bytes":
-            raise HTTPException(status_code=416, detail="Unidad de rango inválida")
-
-        parts = range_str.split("-")
-        start = int(parts[0]) if parts[0] else 0
-        end = int(parts[1]) if parts[1] else file_size - 1
-
-        if start >= file_size or end >= file_size or start > end:
-            return Response(
-                "Rango solicitado no disponible",
-                status_code=416,
-                headers={"Content-Range": f"bytes */{file_size}"}
-            )
-
-        chunk_size = (end - start) + 1
-
-        def iter_chunk(start_pos: int, bytes_to_read: int):
-            with open(filepath, mode="rb") as f:
-                f.seek(start_pos)
-                remaining = bytes_to_read
-                block_size = 128 * 1024  # 128 KB buffer
-                while remaining > 0:
-                    read_count = min(block_size, remaining)
-                    data = f.read(read_count)
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-
-        headers = {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
+    return FileResponse(
+        path=filepath,
+        media_type=mime_type,
+        headers={
             "Accept-Ranges": "bytes",
-            "Content-Length": str(chunk_size),
-            "Content-Type": mime_type,
             "Content-Disposition": disposition_header,
             "Cache-Control": "public, max-age=86400"
         }
-        return StreamingResponse(iter_chunk(start, chunk_size), status_code=206, headers=headers)
-
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Formato de rango no válido")
+    )
 
 
 @app.delete("/api/library/{filename}")

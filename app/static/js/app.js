@@ -662,9 +662,14 @@ class MusicApp {
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'hidden') {
                 this.saveUserState(true);
+            } else if (document.visibilityState === 'visible') {
+                this.pollDownloads();
             }
         });
-        setInterval(() => this.saveUserState(), 10000);
+        setInterval(() => {
+            if (document.hidden) return;
+            this.saveUserState();
+        }, 10000);
     }
 
     setTrendingRegion(regionVal) {
@@ -1448,7 +1453,10 @@ class MusicApp {
 
     startDownloadPolling() {
         this.pollDownloads();
-        this.pollInterval = setInterval(() => this.pollDownloads(), 2500);
+        this.pollInterval = setInterval(() => {
+            if (document.hidden) return; // Do not poll while screen is locked/background to protect audio streaming bandwidth
+            this.pollDownloads();
+        }, 2500);
     }
 
     addOptimisticDownloadTask(task) {

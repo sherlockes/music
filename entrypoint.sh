@@ -39,8 +39,8 @@ if [ -n "$REMOTE_TO_MOUNT" ]; then
         --vfs-cache-mode full \
         --vfs-cache-max-age 24h \
         --vfs-cache-poll-interval 1m \
-        --vfs-read-ahead 128M \
-        --buffer-size 32M \
+        --vfs-read-ahead 64M \
+        --buffer-size 16M \
         --timeout 30s \
         --contimeout 15s \
         --dir-cache-time 15m \
@@ -48,10 +48,17 @@ if [ -n "$REMOTE_TO_MOUNT" ]; then
         --allow-other \
         --allow-non-empty >/tmp/rclone.log 2>&1 &
     
-    sleep 2
-    if grep -E "/mnt/cloud_music (fuse|rclone)" /proc/mounts >/dev/null 2>&1; then
-        echo "[Rclone] Successfully mounted '${REMOTE_NAME}:' on /mnt/cloud_music (Cloud VFS Active)."
-    else
+    # Wait up to 10 seconds for mount to be active and responsive
+    MOUNT_SUCCESS=0
+    for i in $(seq 1 10); do
+        if grep -E "/mnt/cloud_music (fuse|rclone)" /proc/mounts >/dev/null 2>&1 && stat /mnt/cloud_music >/dev/null 2>&1; then
+            echo "[Rclone] Successfully mounted '${REMOTE_NAME}:' on /mnt/cloud_music (Cloud VFS Active)."
+            MOUNT_SUCCESS=1
+            break
+        fi
+        sleep 1
+    done
+    if [ "$MOUNT_SUCCESS" -eq 0 ]; then
         echo "[Rclone] Mount process backgrounded. Check /tmp/rclone.log"
     fi
 else

@@ -4,6 +4,7 @@
 class AudioPlayer {
     constructor() {
         this.audio = new Audio();
+        this.audio.preload = 'auto';
         this.audio.volume = 1.0;
         this.playlist = [];
         this.currentIndex = -1;
@@ -15,6 +16,11 @@ class AudioPlayer {
         this.isPreloadingNext = false;
         this.errorRetryCount = 0;
         this.errorSkipTimer = null;
+
+        // Anti-stutter buffer management & auto-resume guards
+        this._autoResumeTimer = null;
+        this._bufferProgressHandler = null;
+        this._bufferCanPlayThroughHandler = null;
 
         // Offline blob & track transition guards
         this._loadTrackSeq = 0;
@@ -132,18 +138,32 @@ class AudioPlayer {
             this.renderQueue();
         });
         this.audio.addEventListener('waiting', () => {
+            console.log(`[AudioPlayer] Buffer starvation (waiting event). Current buffered ahead: ${this.getBufferedAhead().toFixed(2)}s`);
             this.isLoading = true;
             this.updatePlayButton();
             this.renderQueue();
             this.startLoadingBeep();
+
+            // If we are actively playing and buffer starves, pause temporarily so the browser
+            // does NOT stutter through 20ms chunks (choppy sound). Buffer 1.5s cushion before resuming!
+            if (this.isPlaying && !this._userRequestedPause && !this.isChangingTrack) {
+                try {
+                    this.audio.pause();
+                } catch (e) {}
+                this.scheduleBufferResume();
+            }
         });
         this.audio.addEventListener('stalled', () => {
-            if (this.isPlaying && !this._userRequestedPause && this.audio.paused) {
-                console.log("[AudioPlayer] Audio stream stalled in background, attempting auto-resume...");
-                if (this.audioCtx && this.audioCtx.state === 'suspended') {
-                    this.audioCtx.resume().catch(() => {});
+            if (this.isPlaying && !this._userRequestedPause && !this.isChangingTrack) {
+                console.log("[AudioPlayer] Audio stream stalled, ensuring sufficient buffer before smooth resume...");
+                this.isLoading = true;
+                this.updatePlayButton();
+                if (!this.hasSufficientBuffer(1.5)) {
+                    try {
+                        this.audio.pause();
+                    } catch (e) {}
+                    this.scheduleBufferResume();
                 }
-                this.audio.play().catch(() => {});
             }
         });
 
@@ -152,9 +172,25 @@ class AudioPlayer {
             if (this._marqueeResizeTimeout) clearTimeout(this._marqueeResizeTimeout);
             this._marqueeResizeTimeout = setTimeout(() => this.updateTextMarquees(), 100);
         });
+
+        // Visibility change listener: when user unlocks phone or foregrounds PWA, resume any suspended audio
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'visible') {
+                if (this.audioCtx && this.audioCtx.state === 'suspended') {
+                    console.log("[AudioPlayer] App foregrounded, resuming suspended AudioContext...");
+                    this.audioCtx.resume().catch(() => {});
+                }
+                if (this.isPlaying && !this._userRequestedPause && this.audio && this.audio.paused) {
+                    console.log("[AudioPlayer] App foregrounded, auto-resuming paused playback...");
+                    this.attemptResume();
+                }
+            }
+        });
+
         this.audio.addEventListener('playing', () => {
             this.isLoading = false;
             this.stopLoadingBeep();
+            this.clearBufferResumeListeners();
             this.isChangingTrack = false;
             this.isPlaying = true;
             this._userRequestedPause = false;
@@ -174,55 +210,31 @@ class AudioPlayer {
         this.audio.addEventListener('pause', () => {
             this.stopLoadingBeep();
 
+            // Ignore pause events triggered during track changing / source loading
+            if (this.isChangingTrack) return;
+
             // If the user did NOT request a pause and player state is intended to be playing:
-            // This is an involuntary pause caused by mobile OS power saving, background buffer underrun,
-            // or audio focus temporary glitch. Do NOT set isPlaying = false; auto-resume immediately!
+            // This is an involuntary pause caused by mobile OS power saving or background buffer underrun.
+            // Do NOT set isPlaying = false; auto-resume smoothly once sufficient buffer is accumulated!
             if (!this._userRequestedPause && this.isPlaying) {
-                console.log("[AudioPlayer] Involuntary pause intercepted (userRequestedPause=false). Maintaining playback...");
+                console.log("[AudioPlayer] Involuntary pause intercepted. Buffering before auto-resume...");
                 this.isLoading = true;
                 this.updatePlayButton();
 
-                if (this._autoResumeTimer) {
-                    clearTimeout(this._autoResumeTimer);
-                    this._autoResumeTimer = null;
-                }
+                this.clearBufferResumeListeners();
 
-                const attemptResume = () => {
-                    if (this._userRequestedPause || !this.isPlaying || !this.audio) return;
-                    if (this.audioCtx && this.audioCtx.state === 'suspended') {
-                        this.audioCtx.resume().catch(() => {});
-                    }
-                    if (this.audio.paused) {
-                        this.audio.play().then(() => {
-                            this.isLoading = false;
-                            this.updatePlayButton();
-                        }).catch(e => {
-                            console.debug("[AudioPlayer] Auto-resume postponed, will retry:", e);
-                            if (!this._autoResumeTimer && !this._userRequestedPause && this.isPlaying) {
-                                this._autoResumeTimer = setTimeout(attemptResume, 350);
-                            }
-                        });
-                    } else {
-                        this.isLoading = false;
-                        this.updatePlayButton();
-                    }
-                };
-
-                const onCanPlayResume = () => {
-                    this.audio.removeEventListener('canplay', onCanPlayResume);
-                    attemptResume();
-                };
-
-                if (this.audio.readyState >= 2) {
-                    attemptResume();
+                // If sufficient buffer (>= 1.5s) is already present (e.g. transient focus glitch), resume quickly
+                if (this.hasSufficientBuffer(1.5)) {
+                    this._autoResumeTimer = setTimeout(() => this.attemptResume(), 200);
                 } else {
-                    this.audio.addEventListener('canplay', onCanPlayResume, { once: true });
-                    this._autoResumeTimer = setTimeout(attemptResume, 500);
+                    // Buffer underrun: wait for at least 1.5s of buffer cushion so playback does not stutter!
+                    this.scheduleBufferResume();
                 }
                 return;
             }
 
             // Legitimate user-requested pause
+            this.clearBufferResumeListeners();
             this.isLoading = false;
             this.isPlaying = false;
             this.updatePlayButton();
@@ -330,6 +342,112 @@ class AudioPlayer {
 
         // Register Web Media Session API for background playback lock & lockscreen controls
         this.bindMediaSessionHandlers();
+    }
+
+    getBufferedAhead() {
+        if (!this.audio) return 0;
+        try {
+            const buffered = this.audio.buffered;
+            if (!buffered || buffered.length === 0) return 0;
+            const cur = this.audio.currentTime || 0;
+            for (let i = 0; i < buffered.length; i++) {
+                const start = buffered.start(i);
+                const end = buffered.end(i);
+                if (cur >= start - 0.25 && cur <= end) {
+                    return Math.max(0, end - cur);
+                }
+            }
+        } catch (e) {}
+        return 0;
+    }
+
+    hasSufficientBuffer(minSeconds = 1.5) {
+        if (!this.audio) return false;
+        // Local offline blob has 100% of data locally
+        if (this.activeBlob || this.currentBlobUrl) {
+            return true;
+        }
+        // If track is already near the end
+        if (this.audio.duration && (this.audio.duration - this.audio.currentTime) <= minSeconds) {
+            return true;
+        }
+        const ahead = this.getBufferedAhead();
+        return (ahead >= minSeconds) || (this.audio.readyState >= 4);
+    }
+
+    clearBufferResumeListeners() {
+        if (this._autoResumeTimer) {
+            clearTimeout(this._autoResumeTimer);
+            this._autoResumeTimer = null;
+        }
+        if (this._bufferProgressHandler && this.audio) {
+            this.audio.removeEventListener('progress', this._bufferProgressHandler);
+            this._bufferProgressHandler = null;
+        }
+        if (this._bufferCanPlayThroughHandler && this.audio) {
+            this.audio.removeEventListener('canplaythrough', this._bufferCanPlayThroughHandler);
+            this._bufferCanPlayThroughHandler = null;
+        }
+    }
+
+    scheduleBufferResume() {
+        this.clearBufferResumeListeners();
+
+        this._bufferProgressHandler = () => {
+            if (this.hasSufficientBuffer(1.5)) {
+                this.clearBufferResumeListeners();
+                this.attemptResume();
+            }
+        };
+
+        this._bufferCanPlayThroughHandler = () => {
+            this.clearBufferResumeListeners();
+            this.attemptResume();
+        };
+
+        this.audio.addEventListener('progress', this._bufferProgressHandler);
+        this.audio.addEventListener('canplaythrough', this._bufferCanPlayThroughHandler, { once: true });
+
+        // Fallback safety timer: give up to 2.5s for sufficient buffer before resuming
+        this._autoResumeTimer = setTimeout(() => {
+            this.clearBufferResumeListeners();
+            this.attemptResume();
+        }, 2500);
+    }
+
+    attemptResume() {
+        this.clearBufferResumeListeners();
+
+        if (this._userRequestedPause || !this.isPlaying || !this.audio) return;
+
+        // If not enough buffer yet on network stream, keep waiting to avoid stuttering
+        if (!this.hasSufficientBuffer(1.5)) {
+            this.isLoading = true;
+            this.updatePlayButton();
+            this.scheduleBufferResume();
+            return;
+        }
+
+        if (this.audioCtx && this.audioCtx.state === 'suspended') {
+            this.audioCtx.resume().catch(() => {});
+        }
+
+        if (this.audio.paused) {
+            this.audio.play().then(() => {
+                this.isChangingTrack = false;
+                this.isLoading = false;
+                this.updatePlayButton();
+            }).catch(e => {
+                console.debug("[AudioPlayer] Auto-resume postponed, will retry:", e);
+                if (!this._userRequestedPause && this.isPlaying) {
+                    this._autoResumeTimer = setTimeout(() => this.attemptResume(), 1000);
+                }
+            });
+        } else {
+            this.isChangingTrack = false;
+            this.isLoading = false;
+            this.updatePlayButton();
+        }
     }
 
     bindMediaSessionHandlers() {
@@ -441,6 +559,15 @@ class AudioPlayer {
         try {
             this.audioCtx = new AudioCtx({ latencyHint: 'playback' });
             this.sourceNode = this.audioCtx.createMediaElementSource(this.audio);
+
+            if (typeof this.audioCtx.addEventListener === 'function') {
+                this.audioCtx.addEventListener('statechange', () => {
+                    if (this.audioCtx.state === 'suspended' && this.isPlaying && !this._userRequestedPause) {
+                        console.log("[AudioProcessing] AudioContext suspended in background, auto-resuming...");
+                        this.audioCtx.resume().catch(() => {});
+                    }
+                });
+            }
 
             // Stage 1: 3-Band Parametric Equalizer (Bajos 120Hz, Medios 1000Hz, Altos 6000Hz)
             this.bassFilter = this.audioCtx.createBiquadFilter();
@@ -1007,12 +1134,18 @@ class AudioPlayer {
             return cached;
         }
 
-        // If we don't have a local blob (must fetch over network) and page is in background (screen off),
-        // skip remote fetch analysis to prevent bandwidth contention with the audio streaming element.
-        if (!blob && document.hidden) {
-            console.debug("[AudioAnalysis] Page is in background and track is not locally cached. Skipping network analysis fetch.");
+        // Only perform intensive audio buffer silence/loudness analysis if the track is
+        // already available locally as a Blob (offline cached in IndexedDB).
+        // Doing a parallel remote network fetch for streaming tracks saturates bandwidth,
+        // blocks rclone/Google Drive, spikes CPU, and causes audio stuttering during initial playback.
+        if (!blob) {
+            console.debug(`[AudioAnalysis] Track '${trackKey}' is streaming over network; skipping full-file analysis to preserve streaming bandwidth.`);
             return;
         }
+
+        // Delay intensive decoding so initial playback begins smoothly without CPU spike
+        await new Promise(r => setTimeout(r, 600));
+        if (seq !== null && this._loadTrackSeq !== seq) return;
 
         try {
             let arrayBuffer = null;
@@ -1152,6 +1285,8 @@ class AudioPlayer {
     applyStartSilenceTrim() {
         if (!this.trimSilence || !this.currentTrimPoints || !this.currentTrimPoints.start || this.currentTrimPoints.start <= 0.1) return;
         if (this.audio) {
+            // Do not seek on network stream unless the seek point is safely buffered ahead
+            if (!this.hasSufficientBuffer(this.currentTrimPoints.start + 0.5)) return;
             const cur = this.audio.currentTime || 0;
             // Only skip initial silence before playback has audibly progressed (< 0.08s).
             // Seeking mid-stream after playback has started induces mobile audio buffer underruns and pauses.
@@ -1254,6 +1389,7 @@ class AudioPlayer {
         }
 
         const seq = ++this._loadTrackSeq;
+        this.clearBufferResumeListeners();
         this._lastSourceChangeTime = Date.now();
         this._userRequestedPause = !autoPlay;
         this.isChangingTrack = true;
@@ -1375,6 +1511,21 @@ class AudioPlayer {
                             this.setupAudioProcessing();
                             this.applyNormalizationSettings();
                         }
+
+                        // If streaming over network and initial buffer is still critically thin (< 1.5s):
+                        // Temporarily pause to let the stream buffer ahead 1.5s of audio cushion.
+                        // This prevents initial choppy sound (entrecorte) when phone screen is locked!
+                        if (!isOfflineCache && !this.hasSufficientBuffer(1.5)) {
+                            console.log("[AudioPlayer] Initial streaming buffer < 1.5s. Buffering safety cushion...");
+                            this.isLoading = true;
+                            this.updatePlayButton();
+                            try {
+                                this.audio.pause();
+                            } catch (e) {}
+                            this.scheduleBufferResume();
+                            return;
+                        }
+
                         this.isChangingTrack = false;
                         this.isLoading = false;
                         this.isPlaying = true;
@@ -1400,32 +1551,10 @@ class AudioPlayer {
                     }).catch(err => {
                         if (this._loadTrackSeq !== seq) return;
                         console.warn("[AudioPlayer] play() deferred/buffering:", err);
-                        const onCanPlayOnce = () => {
-                            this.audio.removeEventListener('canplay', onCanPlayOnce);
-                            if (this._loadTrackSeq !== seq) return;
-                            this.audio.play().then(() => {
-                                if (this._loadTrackSeq !== seq) return;
-                                this.isChangingTrack = false;
-                                this.isLoading = false;
-                                this.isPlaying = true;
-                                this._userRequestedPause = false;
-                                this.errorRetryCount = 0;
-                                this.updatePlayButton();
-                                this.renderQueue();
-
-                                // Track network data usage
-                                if (window.app && window.app.storageManager && !isOfflineCache) {
-                                    const approxSize = track.size_bytes || 5000000;
-                                    window.app.storageManager.recordNetworkUsage(approxSize);
-                                }
-                            }).catch(e => {
-                                console.warn("[AudioPlayer] Retry play failed:", e);
-                            });
-                        };
-                        if (this.audio.readyState >= 2) {
-                            onCanPlayOnce();
+                        if (this.hasSufficientBuffer(1.5)) {
+                            this.attemptResume();
                         } else {
-                            this.audio.addEventListener('canplay', onCanPlayOnce, { once: true });
+                            this.scheduleBufferResume();
                         }
                     });
                 }
@@ -1753,6 +1882,7 @@ class AudioPlayer {
         if (!this.audio.src) return;
 
         if (this.audio.paused) {
+            this.clearBufferResumeListeners();
             this._userRequestedPause = false;
             this._lastSourceChangeTime = Date.now();
             if (this.normalizeVolume) {
@@ -1769,6 +1899,7 @@ class AudioPlayer {
                 this.triggerSaveUserState();
             }).catch(console.error);
         } else {
+            this.clearBufferResumeListeners();
             this._userRequestedPause = true;
             this.audio.pause();
             this.isPlaying = false;
@@ -2062,11 +2193,13 @@ class AudioPlayer {
         }
 
         if (finishedTrack && window.app && window.app.storageManager) {
-            // Delay caching completed track by 12s so it does not saturate network bandwidth
-            // while the new track is buffering its critical initial seconds.
+            // Delay caching completed track by 35s so it does not saturate network bandwidth
+            // or cloud rclone I/O while the new track is buffering its critical initial phase.
             setTimeout(() => {
-                this.cacheCompletedTrack(finishedTrack);
-            }, 12000);
+                if (!this.isPlaying || (this.audio && this.audio.readyState >= 4)) {
+                    this.cacheCompletedTrack(finishedTrack);
+                }
+            }, 35000);
         }
     }
 
