@@ -129,7 +129,8 @@ def get_track_metadata(filepath: Path) -> Dict[str, Any]:
         "size_bytes": size_bytes,
         "size_formatted": format_bytes(size_bytes),
         "has_cover": has_cover,
-        "modified_at": mod_time
+        "modified_at": mod_time,
+        "mtime": mtime
     }
 
     _FILE_META_CACHE[filename] = (mtime, size_bytes, meta)
@@ -143,13 +144,20 @@ def invalidate_library_cache():
     global _LIBRARY_CACHE
     _LIBRARY_CACHE["last_scan"] = 0
 
-def get_library_files(force_refresh: bool = False) -> List[Dict[str, Any]]:
-    """Scan MUSIC_DIR and return metadata for all audio files with in-memory caching."""
+def get_library_files(force_refresh: bool = False, sort_by: str = "recent") -> List[Dict[str, Any]]:
+    """Scan MUSIC_DIR and return metadata for all audio files with in-memory caching and optional sorting."""
     global _LIBRARY_CACHE
     now = time.time()
 
+    def _apply_sort(track_list: List[Dict[str, Any]], mode: str) -> List[Dict[str, Any]]:
+        if mode == "artist":
+            return sorted(track_list, key=lambda x: ((x.get("artist") or "").lower(), (x.get("title") or "").lower()))
+        elif mode == "title":
+            return sorted(track_list, key=lambda x: ((x.get("title") or "").lower(), (x.get("artist") or "").lower()))
+        return track_list
+
     if not force_refresh and _LIBRARY_CACHE["tracks"] and (now - _LIBRARY_CACHE["last_scan"]) < CACHE_TTL:
-        return _LIBRARY_CACHE["tracks"]
+        return _apply_sort(_LIBRARY_CACHE["tracks"], sort_by)
 
     if not MUSIC_DIR.exists():
         return []
@@ -177,12 +185,12 @@ def get_library_files(force_refresh: bool = False) -> List[Dict[str, Any]]:
                     logger.error(f"Error scanning track {filepath}: {e}")
     except Exception as e:
         logger.error(f"Error reading MUSIC_DIR: {e}")
-        return _LIBRARY_CACHE.get("tracks", [])
+        return _apply_sort(_LIBRARY_CACHE.get("tracks", []), sort_by)
 
     # Sort files by modification date (newest first)
-    files.sort(key=lambda x: x.get("modified_at", ""), reverse=True)
+    files.sort(key=lambda x: (x.get("mtime", 0) or 0, x.get("modified_at", "")), reverse=True)
     _LIBRARY_CACHE = {"tracks": files, "last_scan": now}
-    return files
+    return _apply_sort(files, sort_by)
 
 def extract_cover_bytes(filename: str) -> Optional[Tuple[bytes, str]]:
     """

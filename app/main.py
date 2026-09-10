@@ -399,9 +399,9 @@ async def api_stream_yt(
     # 2. Ensure background download task is active
     await ensure_yt_cache_downloading(safe_id, video_url)
 
-    # 3. Wait up to 5s for cache_file to complete
+    # 3. Wait up to 8s for cache_file to complete
     start_time = time.time()
-    while (time.time() - start_time) < 5.0:
+    while (time.time() - start_time) < 8.0:
         if cache_file.exists() and cache_file.stat().st_size > 100000:
             return FileResponse(
                 path=cache_file,
@@ -878,9 +878,9 @@ async def api_clear_download(task_id: str):
 # ==========================================
 
 @app.get("/api/library")
-async def api_library(refresh: bool = Query(False)):
-    """List all audio files downloaded in /mnt/cloud_music."""
-    files = await asyncio.to_thread(get_library_files, refresh)
+async def api_library(refresh: bool = Query(False), sort: str = Query("recent")):
+    """List all audio files downloaded in /mnt/cloud_music with optional sorting."""
+    files = await asyncio.to_thread(get_library_files, refresh, sort)
     return {"tracks": files, "count": len(files)}
 
 

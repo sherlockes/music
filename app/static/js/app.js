@@ -8,6 +8,10 @@ class MusicApp {
         this.playlists = [];
         this.currentUser = 'invitado';
         this.userFilter = 'all';
+        this.librarySort = localStorage.getItem('music_app_library_sort') || 'recent';
+        if (!['recent', 'artist', 'title'].includes(this.librarySort)) {
+            this.librarySort = 'recent';
+        }
         this.trendingRegion = 'los40';
         this.selectedTrackForPlaylist = null;
         this.editingPlaylistId = null;
@@ -55,6 +59,7 @@ class MusicApp {
     async init() {
         this.bindNavigation();
         this.bindSearch();
+        this.initLibrarySort();
         this.initPwa();
 
         document.addEventListener('keydown', (e) => {
@@ -1820,9 +1825,116 @@ class MusicApp {
         selectEl.value = this.userFilter;
     }
 
+    initLibrarySort() {
+        const select = document.getElementById('library-sort-select');
+        if (select) {
+            select.value = this.librarySort || 'recent';
+        }
+    }
+
+    setLibrarySort(sortVal) {
+        this.librarySort = sortVal || 'recent';
+        localStorage.setItem('music_app_library_sort', this.librarySort);
+        const sortSelect = document.getElementById('library-sort-select');
+        if (sortSelect && sortSelect.value !== this.librarySort) {
+            sortSelect.value = this.librarySort;
+        }
+        this.applyLibraryFilters();
+    }
+
     filterLibraryByUser(filterVal) {
         this.userFilter = filterVal;
         this.applyLibraryFilters();
+    }
+
+    getTrackArtist(track) {
+        if (!track) return 'Desconocido';
+        if (track.artist && track.artist !== 'Desconocido' && track.artist !== 'Desconocida' && track.artist.trim() !== '') {
+            return track.artist.trim();
+        }
+        const parsed = this.parseSongInfo(track);
+        return (parsed && parsed.artist) ? parsed.artist.trim() : (track.artist || 'Desconocido');
+    }
+
+    getTrackTitle(track) {
+        if (!track) return 'Canción';
+        if (track.title && track.title !== 'Canción desconocida' && track.title.trim() !== '') {
+            return track.title.trim();
+        }
+        const parsed = this.parseSongInfo(track);
+        return (parsed && parsed.title) ? parsed.title.trim() : (track.title || track.filename || 'Canción');
+    }
+
+    sortTracks(tracks) {
+        if (!tracks || tracks.length <= 1) return tracks ? [...tracks] : [];
+        const sorted = [...tracks];
+
+        if (this.librarySort === 'artist') {
+            sorted.sort((a, b) => {
+                const artistA = this.getTrackArtist(a);
+                const artistB = this.getTrackArtist(b);
+                const isUnknownA = !artistA || artistA.toLowerCase() === 'desconocido' || artistA.toLowerCase() === 'desconocida';
+                const isUnknownB = !artistB || artistB.toLowerCase() === 'desconocido' || artistB.toLowerCase() === 'desconocida';
+                if (isUnknownA && !isUnknownB) return 1;
+                if (!isUnknownA && isUnknownB) return -1;
+
+                let cmp = artistA.localeCompare(artistB, 'es', { sensitivity: 'base', numeric: true });
+                if (cmp === 0) {
+                    cmp = artistA.localeCompare(artistB, 'es', { numeric: true });
+                }
+                if (cmp !== 0) return cmp;
+
+                // Secondary sort: Title (A-Z)
+                const titleA = this.getTrackTitle(a);
+                const titleB = this.getTrackTitle(b);
+                let cmpTitle = titleA.localeCompare(titleB, 'es', { sensitivity: 'base', numeric: true });
+                if (cmpTitle === 0) {
+                    cmpTitle = titleA.localeCompare(titleB, 'es', { numeric: true });
+                }
+                if (cmpTitle !== 0) return cmpTitle;
+
+                // Tertiary sort: Most recent
+                const mtimeA = (typeof a.mtime === 'number') ? a.mtime : 0;
+                const mtimeB = (typeof b.mtime === 'number') ? b.mtime : 0;
+                if (mtimeA && mtimeB && mtimeA !== mtimeB) return mtimeB - mtimeA;
+                return (b.modified_at || '').localeCompare(a.modified_at || '');
+            });
+        } else if (this.librarySort === 'title') {
+            sorted.sort((a, b) => {
+                const titleA = this.getTrackTitle(a);
+                const titleB = this.getTrackTitle(b);
+                let cmp = titleA.localeCompare(titleB, 'es', { sensitivity: 'base', numeric: true });
+                if (cmp === 0) {
+                    cmp = titleA.localeCompare(titleB, 'es', { numeric: true });
+                }
+                if (cmp !== 0) return cmp;
+
+                // Secondary sort: Artist (A-Z)
+                const artistA = this.getTrackArtist(a);
+                const artistB = this.getTrackArtist(b);
+                return artistA.localeCompare(artistB, 'es', { sensitivity: 'base', numeric: true });
+            });
+        } else {
+            // Default: 'recent' - Más recientes primero (orden de adición)
+            sorted.sort((a, b) => {
+                const mtimeA = (typeof a.mtime === 'number') ? a.mtime : 0;
+                const mtimeB = (typeof b.mtime === 'number') ? b.mtime : 0;
+                if (mtimeA && mtimeB && mtimeA !== mtimeB) {
+                    return mtimeB - mtimeA;
+                }
+                const modA = a.modified_at || '';
+                const modB = b.modified_at || '';
+                if (modA !== modB) {
+                    return modB.localeCompare(modA);
+                }
+                // Fallback: title
+                const titleA = this.getTrackTitle(a);
+                const titleB = this.getTrackTitle(b);
+                return titleA.localeCompare(titleB, 'es', { sensitivity: 'base', numeric: true });
+            });
+        }
+
+        return sorted;
     }
 
     filterTracks(tracks) {
@@ -1843,10 +1955,14 @@ class MusicApp {
                 (t.filename && t.filename.toLowerCase().includes(q))
             );
         }
-        return result;
+        return this.sortTracks(result);
     }
 
     applyLibraryFilters() {
+        const sortSelect = document.getElementById('library-sort-select');
+        if (sortSelect && sortSelect.value !== this.librarySort) {
+            sortSelect.value = this.librarySort;
+        }
         const tracks = this.filterTracks(this.libraryTracks);
         this.currentFilteredLibraryTracks = tracks;
         this.updateLibraryTrackCountBadge(tracks.length);
@@ -1954,7 +2070,7 @@ class MusicApp {
                 this.showToast('Error al guardar canción en la caché del móvil', 'error');
             }
         }
-        this.renderLibraryView(this.filterTracks(this.libraryTracks));
+        this.applyLibraryFilters();
         if (this.currentTab === 'settings' || this.currentTab === 'storage') {
             this.loadSettingsView();
         }
@@ -2375,6 +2491,30 @@ class MusicApp {
             const modal = document.getElementById('modal-sleep-timer');
             if (modal) modal.classList.add('hidden');
         }
+    }
+
+    preloadYtTrack(videoId) {
+        if (!videoId) return;
+        const cleanId = String(videoId).trim();
+        if (!cleanId) return;
+
+        if (!this._preloadedYtTracks) {
+            this._preloadedYtTracks = new Set();
+        }
+        if (this._preloadedYtTracks.has(cleanId)) return;
+        this._preloadedYtTracks.add(cleanId);
+        if (this._preloadedYtTracks.size > 50) {
+            const first = this._preloadedYtTracks.values().next().value;
+            this._preloadedYtTracks.delete(first);
+        }
+
+        const url = `/api/preload_yt?v=${encodeURIComponent(cleanId)}`;
+        const fetcher = this.customFetch ? this.customFetch.bind(this) : fetch;
+        fetcher(url).then(res => res.json()).then(data => {
+            console.log(`[PreloadYT] Prewarmed track '${cleanId}':`, data);
+        }).catch(err => {
+            console.debug(`[PreloadYT] Prewarm failed for '${cleanId}':`, err);
+        });
     }
 
     async updateSongModalButtonsState() {
@@ -3095,7 +3235,7 @@ class MusicApp {
             await this.storageManager.deleteOfflineTrack(trackKey);
             this.showToast('Canción eliminada de la caché local', 'success');
             if (this.currentTab === 'library') {
-                this.renderLibraryView(this.filterTracks(this.libraryTracks));
+                this.applyLibraryFilters();
             } else if (this.currentTab === 'settings' || this.currentTab === 'storage') {
                 this.loadSettingsView();
             }
@@ -4224,8 +4364,8 @@ class StorageManager {
             this.refreshLocalStorageUI();
             this.autoCleanOfflineCache();
             if (this.app) {
-                if (typeof this.app.renderLibraryView === 'function' && this.app.libraryTracks) {
-                    this.app.renderLibraryView(this.app.filterTracks(this.app.libraryTracks));
+                if (typeof this.app.applyLibraryFilters === 'function' && this.app.libraryTracks) {
+                    this.app.applyLibraryFilters();
                 }
                 if (this.app.currentTab === 'settings' || this.app.currentTab === 'storage') {
                     if (typeof this.app.loadSettingsView === 'function') {

@@ -6,6 +6,7 @@ class AudioPlayer {
         this.audio = new Audio();
         this.audio.preload = 'auto';
         this.audio.volume = 1.0;
+        this.userVolume = 1.0;
         this.playlist = [];
         this.currentIndex = -1;
         this.isPlaying = false;
@@ -245,7 +246,8 @@ class AudioPlayer {
         // Volume control
         if (this.elVolumeSlider) {
             this.elVolumeSlider.addEventListener('input', (e) => {
-                this.audio.volume = e.target.value / 100;
+                this.userVolume = parseFloat(e.target.value) / 100;
+                this.applyVolume();
                 this.audio.muted = false;
                 this.updateVolumeIcon();
                 this.triggerSaveUserState();
@@ -498,20 +500,28 @@ class AudioPlayer {
         } catch (e) {}
     }
 
+    applyVolume() {
+        if (!this.audio) return;
+        let baseVol = (typeof this.userVolume === 'number') ? this.userVolume : 1.0;
+        if (this.normalizeVolume && typeof this.currentTrackGain === 'number') {
+            baseVol = baseVol * this.currentTrackGain;
+        }
+        this.audio.volume = Math.max(0.0, Math.min(1.0, baseVol));
+    }
+
     setupAudioProcessing() {
         if (this.audioCtx) {
-            if (this.audioCtx.state === 'suspended') {
+            if (this.audioCtx.state === 'suspended' && !document.hidden) {
                 this.audioCtx.resume().catch(() => {});
             }
             return;
         }
 
-        // Only initialize Web Audio if user actively needs Equalizer or Volume Normalization.
+        // Only initialize Web Audio if user actively needs Equalizer.
         // Direct HTML5 <audio> output uses Android native AudioTrack hardware offload, which has zero
         // CPU load, never stutters when screen is locked in background, and uses minimal battery.
         const isEqActive = this.eqEnabled && (this.eqBass !== 0 || this.eqMid !== 0 || this.eqTreble !== 0);
-        const isNormActive = this.normalizeVolume;
-        if (!isEqActive && !isNormActive) {
+        if (!isEqActive) {
             return;
         }
 
@@ -524,7 +534,7 @@ class AudioPlayer {
 
             if (typeof this.audioCtx.addEventListener === 'function') {
                 this.audioCtx.addEventListener('statechange', () => {
-                    if (this.audioCtx.state === 'suspended' && this.isPlaying && !this._userRequestedPause) {
+                    if (this.audioCtx.state === 'suspended' && this.isPlaying && !this._userRequestedPause && !document.hidden) {
                         console.log("[AudioProcessing] AudioContext suspended in background, auto-resuming...");
                         this.audioCtx.resume().catch(() => {});
                     }
@@ -570,29 +580,34 @@ class AudioPlayer {
 
             this.applyNormalizationSettings();
             this.applyEqualizerSettings();
-            console.log("[AudioProcessing] Web Audio EQ & Normalization pipeline initialized.");
+            console.log("[AudioProcessing] Web Audio EQ pipeline initialized.");
         } catch (err) {
             console.debug("[AudioProcessing] Web Audio setup warning:", err);
         }
     }
 
     applyNormalizationSettings() {
-        if (!this.audioCtx || !this.compressorNode || !this.gainNode) return;
-        if (this.audioCtx.state === 'suspended') {
-            this.audioCtx.resume().catch(() => {});
-        }
+        // 1. Direct hardware volume scaling for 100% native Android AudioTrack offload (zero stutter, zero AudioContext suspension)
+        this.applyVolume();
 
-        const now = this.audioCtx.currentTime;
-        if (this.normalizeVolume) {
-            this.compressorNode.threshold.setTargetAtTime(-12, now, 0.05);
-            this.compressorNode.ratio.setTargetAtTime(4.0, now, 0.05);
-            this.compressorNode.knee.setTargetAtTime(12, now, 0.05);
-            const targetGain = 1.35 * (this.currentTrackGain || 1.0);
-            this.gainNode.gain.setTargetAtTime(targetGain, now, 0.05);
-        } else {
-            this.compressorNode.threshold.setTargetAtTime(0, now, 0.05);
-            this.compressorNode.ratio.setTargetAtTime(1.0, now, 0.05);
-            this.gainNode.gain.setTargetAtTime(1.0, now, 0.05);
+        // 2. If Web Audio pipeline is actively initialized (Equalizer active), also stage gain in Web Audio graph
+        if (this.audioCtx && this.compressorNode && this.gainNode) {
+            if (this.audioCtx.state === 'suspended' && !document.hidden) {
+                this.audioCtx.resume().catch(() => {});
+            }
+
+            const now = this.audioCtx.currentTime;
+            if (this.normalizeVolume) {
+                this.compressorNode.threshold.setTargetAtTime(-12, now, 0.05);
+                this.compressorNode.ratio.setTargetAtTime(4.0, now, 0.05);
+                this.compressorNode.knee.setTargetAtTime(12, now, 0.05);
+                const targetGain = 1.25 * (this.currentTrackGain || 1.0);
+                this.gainNode.gain.setTargetAtTime(targetGain, now, 0.05);
+            } else {
+                this.compressorNode.threshold.setTargetAtTime(0, now, 0.05);
+                this.compressorNode.ratio.setTargetAtTime(1.0, now, 0.05);
+                this.gainNode.gain.setTargetAtTime(1.0, now, 0.05);
+            }
         }
     }
 
@@ -957,9 +972,6 @@ class AudioPlayer {
         this.normalizeVolume = !!enabled;
         localStorage.setItem('music_app_normalize_volume', this.normalizeVolume ? 'true' : 'false');
         console.log(`[VolumeNorm] Setting changed: normalizeVolume = ${this.normalizeVolume}`);
-        if (this.normalizeVolume) {
-            this.setupAudioProcessing();
-        }
         this.applyNormalizationSettings();
         if (this.normalizeVolume && this.currentIndex >= 0 && this.currentIndex < this.playlist.length) {
             const track = this.playlist[this.currentIndex];
@@ -1443,7 +1455,8 @@ class AudioPlayer {
 
             const tryPlay = () => {
                 if (this._loadTrackSeq !== seq) return;
-                if (this.normalizeVolume || (this.eqEnabled && (this.eqBass !== 0 || this.eqMid !== 0 || this.eqTreble !== 0))) {
+                const isEqActive = this.eqEnabled && (this.eqBass !== 0 || this.eqMid !== 0 || this.eqTreble !== 0);
+                if (isEqActive) {
                     this.setupAudioProcessing();
                 }
                 const playPromise = this.audio.play();
@@ -1451,10 +1464,7 @@ class AudioPlayer {
                     playPromise.then(() => {
                         if (this._loadTrackSeq !== seq) return;
                         this.stopLoadingBeep();
-                        if (this.normalizeVolume) {
-                            this.setupAudioProcessing();
-                            this.applyNormalizationSettings();
-                        }
+                        this.applyNormalizationSettings();
 
                         this.isChangingTrack = false;
                         this.isLoading = false;
@@ -1821,10 +1831,11 @@ class AudioPlayer {
             this.clearBufferResumeListeners();
             this._userRequestedPause = false;
             this._lastSourceChangeTime = Date.now();
-            if (this.normalizeVolume || (this.eqEnabled && (this.eqBass !== 0 || this.eqMid !== 0 || this.eqTreble !== 0))) {
+            const isEqActive = this.eqEnabled && (this.eqBass !== 0 || this.eqMid !== 0 || this.eqTreble !== 0);
+            if (isEqActive) {
                 this.setupAudioProcessing();
-                this.applyNormalizationSettings();
             }
+            this.applyNormalizationSettings();
             this.audio.play().then(() => {
                 this.isPlaying = true;
                 this.updatePlayButton();
@@ -2127,7 +2138,12 @@ class AudioPlayer {
         if (finishedTrack && window.app && window.app.storageManager) {
             // Delay caching completed track by 35s so it does not saturate network bandwidth
             // or cloud rclone I/O while the new track is buffering its critical initial phase.
+            // DO NOT run if document is hidden (screen locked / phone in pocket) to preserve mobile bandwidth.
             setTimeout(() => {
+                if (document.hidden) {
+                    console.log("[Offline Cache] Screen locked/background, skipping auto-cache to preserve streaming bandwidth.");
+                    return;
+                }
                 if (!this.isPlaying || (this.audio && this.audio.readyState >= 4)) {
                     this.cacheCompletedTrack(finishedTrack);
                 }
@@ -2136,6 +2152,7 @@ class AudioPlayer {
     }
 
     async cacheCompletedTrack(track) {
+        if (document.hidden) return;
         if (!track || !window.app || !window.app.storageManager) return;
 
         let trackKey = track.filename || track.id;
@@ -2221,10 +2238,11 @@ class AudioPlayer {
 
     async checkPreloadNextTrack() {
         if (!this.audio || !this.audio.duration || this.playlist.length === 0) return;
-        const remaining = this.audio.duration - this.audio.currentTime;
+        const cur = this.audio.currentTime || 0;
+        const remaining = this.audio.duration - cur;
 
-        // Trigger background pre-warming when 35s remain in current song
-        if (remaining > 0 && remaining <= 35 && !this.isPreloadingNext) {
+        // Trigger background pre-warming on VPS when current song has played >= 15s or <= 45s remain
+        if ((cur >= 15 || (remaining > 0 && remaining <= 45)) && !this.isPreloadingNext) {
             this.isPreloadingNext = true;
             let nextIdx = (this.currentIndex + 1) % this.playlist.length;
             if (this.isShuffle && this.playlist.length > 1) {
@@ -2233,17 +2251,15 @@ class AudioPlayer {
 
             const nextTrack = this.playlist[nextIdx];
             if (!nextTrack) {
-                this.isPreloadingNext = false;
                 return;
             }
 
-            if (nextTrack.is_yt || nextTrack.id) {
+            const ytTarget = nextTrack.id || (!nextTrack.filename ? `${nextTrack.artist || ''} ${nextTrack.title || ''}`.trim() : null);
+            if (!nextTrack.filename && ytTarget) {
                 if (window.app && typeof window.app.preloadYtTrack === 'function') {
-                    window.app.preloadYtTrack(nextTrack.id);
+                    window.app.preloadYtTrack(ytTarget);
                 }
             }
-        } else if (remaining > 40) {
-            this.isPreloadingNext = false;
         }
     }
 
