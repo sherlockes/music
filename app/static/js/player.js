@@ -146,7 +146,6 @@ class AudioPlayer {
             }
         });
         this.audio.addEventListener('waiting', () => {
-            console.log(`[AudioPlayer] Stream buffering (waiting event). Current buffered ahead: ${this.getBufferedAhead().toFixed(2)}s`);
             this.isLoading = true;
             if (!document.hidden) {
                 this.updatePlayButton();
@@ -154,21 +153,9 @@ class AudioPlayer {
             } else {
                 this.updateMediaSessionPlaybackState();
             }
-            this.startLoadingBeep();
         });
         this.audio.addEventListener('stalled', () => {
-            if (this.isPlaying && !this._userRequestedPause && !this.isChangingTrack) {
-                console.log("[AudioPlayer] Audio stream stalled, waiting for network data...");
-                this.isLoading = true;
-                if (!document.hidden) {
-                    this.updatePlayButton();
-                } else {
-                    this.updateMediaSessionPlaybackState();
-                }
-                if (this.audio && this.audio.paused) {
-                    this.scheduleBufferResume(1500);
-                }
-            }
+            // Native browser streaming handles buffering without JS intervention
         });
 
         // Window resize listener to recalculate text overflow marquee
@@ -181,12 +168,10 @@ class AudioPlayer {
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
                 if (this.audioCtx && this.audioCtx.state === 'suspended') {
-                    console.log("[AudioPlayer] App foregrounded, resuming suspended AudioContext...");
                     this.audioCtx.resume().catch(() => {});
                 }
                 if (this.isPlaying && !this._userRequestedPause && this.audio && this.audio.paused && !this.isChangingTrack) {
-                    console.log("[AudioPlayer] App foregrounded, auto-resuming paused playback...");
-                    this.attemptResume();
+                    this.audio.play().catch(() => {});
                 }
                 this.updatePlayButton();
                 this.renderQueue();
@@ -223,7 +208,7 @@ class AudioPlayer {
         this.audio.addEventListener('pause', () => {
             this.stopLoadingBeep();
 
-            // Ignore pause events triggered during track changing, source loading, or when track has ended
+            // Ignore internal pause during track transition/source change, or when track has ended
             if (this.isChangingTrack || (this.audio && this.audio.ended)) return;
 
             // Legitimate user-requested pause
@@ -236,20 +221,11 @@ class AudioPlayer {
                 return;
             }
 
-            // Involuntary pause caused by mobile OS buffer underrun, Android Doze, or transient audio ducking:
-            // If the audio pauses without user intent, we must NOT let it sit paused forever (which freezes
-            // the PWA tab in background Doze mode), but we must NOT force an immediate 200ms resume either
-            // (which causes the 50ms-burst stutter loop before new buffer has arrived).
-            // Instead, we schedule a buffer-backed resume: wait for 'canplaythrough' or 'progress' to build
-            // >= 1.5s of buffer, with a safe debounced timer (1200ms) fallback.
-            if (this.isPlaying) {
-                this.isLoading = true;
-                if (!document.hidden) {
-                    this.updatePlayButton();
-                } else {
-                    this.updateMediaSessionPlaybackState();
-                }
-                this.scheduleBufferResume(1200);
+            // Involuntary pause / transient system interruption (do not fight native pipeline with timers)
+            if (!document.hidden) {
+                this.updatePlayButton();
+            } else {
+                this.updateMediaSessionPlaybackState();
             }
         });
 
@@ -374,18 +350,8 @@ class AudioPlayer {
         return 0;
     }
 
-    hasSufficientBuffer(minSeconds = 2.0) {
-        if (!this.audio) return false;
-        // Local offline blob has 100% of data locally
-        if (this.activeBlob || this.currentBlobUrl) {
-            return true;
-        }
-        // If track is already near the end
-        if (this.audio.duration && (this.audio.duration - this.audio.currentTime) <= minSeconds) {
-            return true;
-        }
-        const ahead = this.getBufferedAhead();
-        return ahead >= minSeconds;
+    hasSufficientBuffer(minSeconds = 0) {
+        return true;
     }
 
     clearBufferResumeListeners() {
@@ -393,92 +359,15 @@ class AudioPlayer {
             clearTimeout(this._autoResumeTimer);
             this._autoResumeTimer = null;
         }
-        if (this._bufferProgressHandler && this.audio) {
-            this.audio.removeEventListener('progress', this._bufferProgressHandler);
-            this._bufferProgressHandler = null;
-        }
-        if (this._bufferCanPlayThroughHandler && this.audio) {
-            this.audio.removeEventListener('canplaythrough', this._bufferCanPlayThroughHandler);
-            this._bufferCanPlayThroughHandler = null;
-        }
     }
 
-    scheduleBufferResume(delayMs = 1200) {
-        this.clearBufferResumeListeners();
-
-        if (this._userRequestedPause || !this.isPlaying || !this.audio || this.isChangingTrack) return;
-
-        // Never resume synchronously inside a pause/underrun event callback.
-        // Doing so produces an immediate 30-50Hz audio chattering loop ("crispeo").
-        // Enforce a minimum safe delay (600ms) to give the audio engine and incoming network packets
-        // time to build real headroom before unpausing.
-        const safeDelay = Math.max(600, delayMs);
-
-        // 1. Listen for canplaythrough
-        this._bufferCanPlayThroughHandler = () => {
-            if (this.hasSufficientBuffer(2.0)) {
-                console.log("[AudioPlayer] canplaythrough with healthy buffer, resuming...");
-                this.clearBufferResumeListeners();
-                this.attemptResume();
-            }
-        };
-        this.audio.addEventListener('canplaythrough', this._bufferCanPlayThroughHandler, { once: true });
-
-        // 2. Listen for progress events to resume as soon as buffer has accumulated >= 2.5s
-        this._bufferProgressHandler = () => {
-            if (this.hasSufficientBuffer(2.5)) {
-                console.log(`[AudioPlayer] Healthy buffer reached (${this.getBufferedAhead().toFixed(2)}s), resuming...`);
-                this.clearBufferResumeListeners();
-                this.attemptResume();
-            }
-        };
-        this.audio.addEventListener('progress', this._bufferProgressHandler);
-
-        // 3. Fallback safety timer
-        this._autoResumeTimer = setTimeout(() => {
-            this.clearBufferResumeListeners();
-            if (this.isPlaying && !this._userRequestedPause && this.audio && this.audio.paused && !this.isChangingTrack) {
-                console.log("[AudioPlayer] Buffer resume timer expired, attempting playback resume...");
-                this.attemptResume();
-            }
-        }, safeDelay);
+    scheduleBufferResume(delayMs = 0) {
+        // No-op: standard native HTML5 <audio> handles buffering
     }
 
     attemptResume() {
-        this.clearBufferResumeListeners();
-
-        if (this._userRequestedPause || !this.isPlaying || !this.audio || this.isChangingTrack) return;
-
-        if (this.audioCtx && this.audioCtx.state === 'suspended') {
-            this.audioCtx.resume().catch(() => {});
-        }
-
-        if (this.audio.paused) {
-            this.audio.play().then(() => {
-                this.isChangingTrack = false;
-                this.isLoading = false;
-                this.isPlaying = true;
-                this._userRequestedPause = false;
-                if (!document.hidden) {
-                    this.updatePlayButton();
-                } else {
-                    this.updateMediaSessionPlaybackState();
-                }
-            }).catch(e => {
-                console.debug("[AudioPlayer] Auto-resume deferred:", e);
-                this.isLoading = false;
-                if (!document.hidden) {
-                    this.updatePlayButton();
-                }
-            });
-        } else {
-            this.isChangingTrack = false;
-            this.isLoading = false;
-            if (!document.hidden) {
-                this.updatePlayButton();
-            } else {
-                this.updateMediaSessionPlaybackState();
-            }
+        if (this.audio && this.audio.paused && !this._userRequestedPause) {
+            this.audio.play().catch(() => {});
         }
     }
 
@@ -1626,54 +1515,11 @@ class AudioPlayer {
                         this.updatePlayButton();
                         if (err && err.name === 'NotAllowedError') {
                             this.isPlaying = false;
-                        } else {
-                            this.scheduleBufferResume(800);
                         }
                     });
                 }
             };
-            // If local offline blob cache, or if screen is visible, or if already has >= 1.5s buffered: start immediately
-            if (isOfflineCache || !document.hidden || this.hasSufficientBuffer(1.5)) {
-                tryPlay();
-            } else {
-                // When starting a network stream in the background (screen locked), buffer a small cushion
-                // (>= 1.5s) before starting playback so it does not starve immediately on the first 26ms frame ("crispeo").
-                let started = false;
-                let safetyTimer = null;
-
-                const startWithCushion = () => {
-                    if (started || this._loadTrackSeq !== seq) return;
-                    started = true;
-                    if (this.audio) {
-                        this.audio.removeEventListener('canplay', onCanPlay);
-                        this.audio.removeEventListener('progress', onProgress);
-                    }
-                    if (safetyTimer) {
-                        clearTimeout(safetyTimer);
-                        safetyTimer = null;
-                    }
-                    tryPlay();
-                };
-
-                const onCanPlay = () => {
-                    if (this.hasSufficientBuffer(1.0)) {
-                        startWithCushion();
-                    }
-                };
-
-                const onProgress = () => {
-                    if (this.hasSufficientBuffer(1.5)) {
-                        startWithCushion();
-                    }
-                };
-
-                this.audio.addEventListener('canplay', onCanPlay, { once: true });
-                this.audio.addEventListener('progress', onProgress);
-
-                safetyTimer = setTimeout(() => {
-                    startWithCushion();
-                }, 800);
-            }
+            tryPlay();
         } else {
             this.isChangingTrack = false;
             this.isLoading = false;
