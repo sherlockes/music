@@ -663,7 +663,8 @@ class MusicApp {
         }
     }
 
-    async syncStateToServer(payload) {
+    async syncStateToServer(payload, force = false) {
+        if (document.hidden && !force) return;
         try {
             await this.customFetch(`/api/user/state?username=${encodeURIComponent(this.currentUser)}`, {
                 method: 'POST',

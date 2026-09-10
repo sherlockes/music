@@ -162,7 +162,7 @@ class AudioPlayer {
             this._marqueeResizeTimeout = setTimeout(() => this.updateTextMarquees(), 100);
         });
 
-        // Visibility change listener: when user unlocks phone or foregrounds PWA, resume any suspended audio
+        // Visibility change listener: when user unlocks phone or foregrounds PWA, resume any suspended audio and refresh UI
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
                 if (this.audioCtx && this.audioCtx.state === 'suspended') {
@@ -173,6 +173,9 @@ class AudioPlayer {
                     console.log("[AudioPlayer] App foregrounded, auto-resuming paused playback...");
                     this.attemptResume();
                 }
+                this.updatePlayButton();
+                this.renderQueue();
+                this.updateTextMarquees();
             }
         });
 
@@ -184,17 +187,23 @@ class AudioPlayer {
             this.isPlaying = true;
             this._userRequestedPause = false;
             this.errorRetryCount = 0;
-            if (this.audioCtx && this.audioCtx.state === 'suspended') {
+            if (this.audioCtx && this.audioCtx.state === 'suspended' && !document.hidden) {
                 this.audioCtx.resume().catch(() => {});
             }
-            this.applyStartSilenceTrim();
-            this.updatePlayButton();
-            this.renderQueue();
+            if (!document.hidden) {
+                this.applyStartSilenceTrim();
+                this.updatePlayButton();
+                this.renderQueue();
+            } else {
+                this.updateMediaSessionPlaybackState();
+            }
         });
         this.audio.addEventListener('canplay', () => {
             this.isLoading = false;
             this.stopLoadingBeep();
-            this.updatePlayButton();
+            if (!document.hidden) {
+                this.updatePlayButton();
+            }
         });
         this.audio.addEventListener('pause', () => {
             this.stopLoadingBeep();
@@ -212,14 +221,17 @@ class AudioPlayer {
                 return;
             }
 
-            // Involuntary pause caused by mobile OS audio focus or notification:
-            // Auto-resume promptly without artificial pauses or blocking buffer checks
+            // Involuntary pause caused by mobile OS buffer underrun or audio ducking:
+            // CRITICAL: DO NOT force immediate audio.play() on a short timeout here!
+            // When mobile Chrome is buffering or underruns at the start of a song in the background,
+            // calling audio.play() interrupts the browser's native buffer accumulation and forces
+            // playback with empty buffers, creating an endless stutter loop ("entrecortado").
+            // The browser will automatically resume playback as soon as the buffer is filled.
             if (this.isPlaying) {
-                console.log("[AudioPlayer] Involuntary pause intercepted. Auto-resuming playback...");
                 this.isLoading = true;
-                this.updatePlayButton();
-                this.clearBufferResumeListeners();
-                this._autoResumeTimer = setTimeout(() => this.attemptResume(), 200);
+                if (!document.hidden) {
+                    this.updatePlayButton();
+                }
             }
         });
 
@@ -386,7 +398,7 @@ class AudioPlayer {
 
         if (this._userRequestedPause || !this.isPlaying || !this.audio || this.isChangingTrack) return;
 
-        if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        if (this.audioCtx && this.audioCtx.state === 'suspended' && !document.hidden) {
             this.audioCtx.resume().catch(() => {});
         }
 
@@ -396,9 +408,10 @@ class AudioPlayer {
                 this.isLoading = false;
                 this.updatePlayButton();
             }).catch(e => {
-                console.debug("[AudioPlayer] Auto-resume deferred, will retry:", e);
-                if (!this._userRequestedPause && this.isPlaying) {
-                    this._autoResumeTimer = setTimeout(() => this.attemptResume(), 800);
+                console.debug("[AudioPlayer] Auto-resume deferred:", e);
+                this.isLoading = false;
+                if (!document.hidden) {
+                    this.updatePlayButton();
                 }
             });
         } else {
@@ -1246,6 +1259,7 @@ class AudioPlayer {
     }
 
     applyStartSilenceTrim() {
+        if (document.hidden) return;
         if (!this.trimSilence || !this.currentTrimPoints || !this.currentTrimPoints.start || this.currentTrimPoints.start <= 0.1) return;
         if (this.audio) {
             // Do not seek on network stream unless the seek point is safely buffered ahead
@@ -1501,8 +1515,12 @@ class AudioPlayer {
                         this.isPlaying = true;
                         this._userRequestedPause = false;
                         this.errorRetryCount = 0;
-                        this.updatePlayButton();
-                        this.renderQueue();
+                        if (!document.hidden) {
+                            this.updatePlayButton();
+                            this.renderQueue();
+                        } else {
+                            this.updateMediaSessionPlaybackState();
+                        }
 
                         // Track network data usage
                         if (window.app && window.app.storageManager && !isOfflineCache) {
@@ -2246,8 +2264,10 @@ class AudioPlayer {
         const total = this.audio.duration;
         const percent = (current / total) * 100;
 
-        if (this.elSeekSlider) this.elSeekSlider.value = percent;
-        if (this.elCurrTime) this.elCurrTime.innerText = this.formatTime(current);
+        if (!document.hidden) {
+            if (this.elSeekSlider) this.elSeekSlider.value = percent;
+            if (this.elCurrTime) this.elCurrTime.innerText = this.formatTime(current);
+        }
 
         this.updateMediaSessionPosition();
         this.checkPreloadNextTrack();
@@ -2261,8 +2281,8 @@ class AudioPlayer {
             }
         }
 
-        // Automatic start silence catch-up in early playback (only if playback has barely started < 0.08s)
-        if (this.trimSilence && this.currentTrimPoints && this.currentTrimPoints.start > 0.15 && current < 0.08 && current < this.currentTrimPoints.start - 0.04) {
+        // Automatic start silence catch-up in early playback (only if foregrounded and barely started < 0.08s)
+        if (!document.hidden && this.trimSilence && this.currentTrimPoints && this.currentTrimPoints.start > 0.15 && current < 0.08 && current < this.currentTrimPoints.start - 0.04) {
             this.applyStartSilenceTrim();
         }
 
@@ -2467,7 +2487,7 @@ class AudioPlayer {
     }
 
     renderQueue() {
-        if (!this.elQueueList) return;
+        if (document.hidden || !this.elQueueList) return;
 
         const countBadge = document.getElementById('queue-count-badge');
         if (countBadge) {
