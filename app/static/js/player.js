@@ -29,6 +29,9 @@ class AudioPlayer {
         this._userRequestedPause = false;
         this.activeBlob = null;
         this.currentBlobUrl = null;
+        this.preloadedNextTrackKey = null;
+        this.preloadedNextBlob = null;
+        this.preloadedNextBlobUrl = null;
 
         // Silence Trimming (Skip silence at start/end of track for library & cached songs)
         this.trimSilence = localStorage.getItem('music_app_trim_silence') === 'true';
@@ -166,7 +169,7 @@ class AudioPlayer {
                     console.log("[AudioPlayer] App foregrounded, resuming suspended AudioContext...");
                     this.audioCtx.resume().catch(() => {});
                 }
-                if (this.isPlaying && !this._userRequestedPause && this.audio && this.audio.paused) {
+                if (this.isPlaying && !this._userRequestedPause && this.audio && this.audio.paused && !this.isChangingTrack) {
                     console.log("[AudioPlayer] App foregrounded, auto-resuming paused playback...");
                     this.attemptResume();
                 }
@@ -196,8 +199,8 @@ class AudioPlayer {
         this.audio.addEventListener('pause', () => {
             this.stopLoadingBeep();
 
-            // Ignore pause events triggered during track changing / source loading
-            if (this.isChangingTrack) return;
+            // Ignore pause events triggered during track changing, source loading, or when track has ended
+            if (this.isChangingTrack || (this.audio && this.audio.ended)) return;
 
             // Legitimate user-requested pause
             if (this._userRequestedPause) {
@@ -381,7 +384,7 @@ class AudioPlayer {
     attemptResume() {
         this.clearBufferResumeListeners();
 
-        if (this._userRequestedPause || !this.isPlaying || !this.audio) return;
+        if (this._userRequestedPause || !this.isPlaying || !this.audio || this.isChangingTrack) return;
 
         if (this.audioCtx && this.audioCtx.state === 'suspended') {
             this.audioCtx.resume().catch(() => {});
@@ -1075,6 +1078,10 @@ class AudioPlayer {
 
     async analyzeSilence(track, blob = null, seq = null) {
         if (!track || (!this.trimSilence && !this.normalizeVolume)) return;
+        if (document.hidden) {
+            console.debug("[AudioAnalysis] Document hidden / background playback; skipping audio buffer decode to prevent OS throttling and audio stutter.");
+            return;
+        }
         const trackKey = track.filename || track.id;
         if (!trackKey) return;
 
@@ -1356,14 +1363,10 @@ class AudioPlayer {
         }
         const trackKey = track.filename || track.id;
 
-        // Clean up previous blob URL to prevent memory leaks and dangling streams
-        if (this.currentBlobUrl) {
-            try {
-                URL.revokeObjectURL(this.currentBlobUrl);
-            } catch (e) {}
-            this.currentBlobUrl = null;
-            this.activeBlob = null;
-        }
+        // Clean up previous blob URL safely without breaking active element
+        const previousBlobUrl = this.currentBlobUrl;
+        this.currentBlobUrl = null;
+        this.activeBlob = null;
 
         // Unhide bottom player bar if hidden
         if (this.elBottomPlayer) {
@@ -1406,20 +1409,40 @@ class AudioPlayer {
         // Reset preloader state for next cycle
         this.isPreloadingNext = false;
 
-        // Check if track is available in local IndexedDB offline storage
-        if (window.app && window.app.storageManager && trackKey) {
-            try {
-                const offlineItem = await window.app.storageManager.getOfflineTrack(trackKey);
-                if (this._loadTrackSeq !== seq) return; // Stale async call discarded
-                if (offlineItem && offlineItem.blob && offlineItem.blob.size > 10000) {
-                    this.activeBlob = offlineItem.blob;
-                    this.currentBlobUrl = URL.createObjectURL(this.activeBlob);
-                    streamUrl = this.currentBlobUrl;
-                    isOfflineCache = true;
-                    console.log(`[Offline PWA] Playing ${trackKey} from local IndexedDB cache (${this.activeBlob.size} bytes).`);
+        // Use pre-resolved offline blob URL synchronously if available
+        if (this.preloadedNextTrackKey === trackKey && this.preloadedNextBlobUrl) {
+            this.activeBlob = this.preloadedNextBlob;
+            this.currentBlobUrl = this.preloadedNextBlobUrl;
+            streamUrl = this.currentBlobUrl;
+            isOfflineCache = true;
+            console.log(`[Offline PWA] Fast-loading ${trackKey} synchronously using pre-resolved offline blob.`);
+            this.preloadedNextTrackKey = null;
+            this.preloadedNextBlob = null;
+            this.preloadedNextBlobUrl = null;
+        } else {
+            if (this.preloadedNextBlobUrl) {
+                try { URL.revokeObjectURL(this.preloadedNextBlobUrl); } catch (e) {}
+                this.preloadedNextTrackKey = null;
+                this.preloadedNextBlob = null;
+                this.preloadedNextBlobUrl = null;
+            }
+
+            // Check if track is available in local IndexedDB offline storage
+            const mayBeCached = this.isTrackCached(track);
+            if (mayBeCached && window.app && window.app.storageManager && trackKey) {
+                try {
+                    const offlineItem = await window.app.storageManager.getOfflineTrack(trackKey);
+                    if (this._loadTrackSeq !== seq) return; // Stale async call discarded
+                    if (offlineItem && offlineItem.blob && offlineItem.blob.size > 10000) {
+                        this.activeBlob = offlineItem.blob;
+                        this.currentBlobUrl = URL.createObjectURL(this.activeBlob);
+                        streamUrl = this.currentBlobUrl;
+                        isOfflineCache = true;
+                        console.log(`[Offline PWA] Playing ${trackKey} from local IndexedDB cache (${this.activeBlob.size} bytes).`);
+                    }
+                } catch (err) {
+                    console.debug("IndexedDB offline cache check failed:", err);
                 }
-            } catch (err) {
-                console.debug("IndexedDB offline cache check failed:", err);
             }
         }
 
@@ -1439,10 +1462,17 @@ class AudioPlayer {
         this.audio.src = streamUrl;
         this.audio.load();
 
-        // Trigger automatic silence analysis & loudness calculation for library/cached tracks
+        // Safely release previous blob URL after audio.src has detached from it
+        if (previousBlobUrl && previousBlobUrl !== streamUrl) {
+            try {
+                URL.revokeObjectURL(previousBlobUrl);
+            } catch (e) {}
+        }
+
+        // Trigger automatic silence analysis & loudness calculation for library/cached tracks (foreground only)
         this.currentTrimPoints = { start: 0, end: 0 };
         this.currentTrackGain = 1.0;
-        if (this.trimSilence || this.normalizeVolume) {
+        if (!document.hidden && (this.trimSilence || this.normalizeVolume)) {
             this.analyzeSilence(track, this.activeBlob, seq);
         }
 
@@ -1491,10 +1521,12 @@ class AudioPlayer {
                     }).catch(err => {
                         if (this._loadTrackSeq !== seq) return;
                         console.warn("[AudioPlayer] play() deferred/waiting:", err);
+                        this.stopLoadingBeep();
+                        this.isChangingTrack = false;
+                        this.isLoading = false;
+                        this.updatePlayButton();
                         if (err && err.name === 'NotAllowedError') {
                             this.isPlaying = false;
-                            this.isLoading = false;
-                            this.updatePlayButton();
                         } else {
                             setTimeout(() => {
                                 if (this._loadTrackSeq === seq && this.isPlaying && !this._userRequestedPause) {
@@ -1527,13 +1559,9 @@ class AudioPlayer {
         this.playlist = [];
         this.renderQueue();
 
-        if (this.currentBlobUrl) {
-            try {
-                URL.revokeObjectURL(this.currentBlobUrl);
-            } catch (e) {}
-            this.currentBlobUrl = null;
-            this.activeBlob = null;
-        }
+        const previousBlobUrl = this.currentBlobUrl;
+        this.currentBlobUrl = null;
+        this.activeBlob = null;
 
         if (this.elBottomPlayer) {
             this.elBottomPlayer.classList.remove('hidden');
@@ -1583,6 +1611,12 @@ class AudioPlayer {
         this._lastSourceChangeTime = Date.now();
         this.audio.src = streamUrl;
         this.audio.load();
+
+        if (previousBlobUrl && previousBlobUrl !== streamUrl) {
+            try {
+                URL.revokeObjectURL(previousBlobUrl);
+            } catch (e) {}
+        }
 
         this.isLoading = true;
         this.isPlaying = true;
@@ -2092,6 +2126,9 @@ class AudioPlayer {
     }
 
     onTrackEnded() {
+        this.clearBufferResumeListeners();
+        this.isChangingTrack = true;
+
         const finishedTrack = (this.currentIndex >= 0 && this.currentIndex < this.playlist.length) 
             ? this.playlist[this.currentIndex] 
             : null;
@@ -2241,7 +2278,7 @@ class AudioPlayer {
         const cur = this.audio.currentTime || 0;
         const remaining = this.audio.duration - cur;
 
-        // Trigger background pre-warming on VPS when current song has played >= 15s or <= 45s remain
+        // Trigger background pre-warming on VPS and pre-resolve local blob URL when current song has played >= 15s or <= 45s remain
         if ((cur >= 15 || (remaining > 0 && remaining <= 45)) && !this.isPreloadingNext) {
             this.isPreloadingNext = true;
             let nextIdx = (this.currentIndex + 1) % this.playlist.length;
@@ -2252,6 +2289,22 @@ class AudioPlayer {
             const nextTrack = this.playlist[nextIdx];
             if (!nextTrack) {
                 return;
+            }
+
+            const nextKey = nextTrack.filename || nextTrack.id;
+            // Pre-resolve offline blob URL in advance if track is cached in IndexedDB
+            if (window.app && window.app.storageManager && nextKey && this.isTrackCached(nextTrack)) {
+                window.app.storageManager.getOfflineTrack(nextKey).then(offlineItem => {
+                    if (offlineItem && offlineItem.blob && offlineItem.blob.size > 10000) {
+                        if (this.preloadedNextBlobUrl && this.preloadedNextBlobUrl !== this.currentBlobUrl) {
+                            try { URL.revokeObjectURL(this.preloadedNextBlobUrl); } catch (e) {}
+                        }
+                        this.preloadedNextTrackKey = nextKey;
+                        this.preloadedNextBlob = offlineItem.blob;
+                        this.preloadedNextBlobUrl = URL.createObjectURL(offlineItem.blob);
+                        console.log(`[Offline PWA] Pre-resolved offline blob URL for next track: ${nextKey}`);
+                    }
+                }).catch(() => {});
             }
 
             const ytTarget = nextTrack.id || (!nextTrack.filename ? `${nextTrack.artist || ''} ${nextTrack.title || ''}`.trim() : null);
