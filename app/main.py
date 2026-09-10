@@ -37,6 +37,7 @@ from app.services.deezer_service import (
 from app.services.library_service import (
     get_library_files,
     extract_cover_bytes,
+    find_audio_file,
     delete_track,
     update_track_metadata_and_rename,
     enforce_cloud_storage_limit,
@@ -1040,15 +1041,15 @@ async def api_stream_audio(filename: str, request: Request):
         record_track_listen(filename)
     except Exception:
         pass
-    filepath = MUSIC_DIR / filename
-    if not filepath.exists() or not filepath.is_file():
+    filepath = find_audio_file(filename)
+    if not filepath or not filepath.is_file():
         raise HTTPException(status_code=404, detail="Archivo de audio no encontrado")
 
     mime_type, _ = mimetypes.guess_type(str(filepath))
     if not mime_type:
         mime_type = "audio/mpeg"
 
-    disposition_header = make_safe_disposition(filename)
+    disposition_header = make_safe_disposition(filepath.name)
 
     return FileResponse(
         path=filepath,

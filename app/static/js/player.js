@@ -138,21 +138,36 @@ class AudioPlayer {
         // Loading and buffering state listeners
         this.audio.addEventListener('loadstart', () => {
             this.isLoading = true;
-            this.updatePlayButton();
-            this.renderQueue();
+            if (!document.hidden) {
+                this.updatePlayButton();
+                this.renderQueue();
+            } else {
+                this.updateMediaSessionPlaybackState();
+            }
         });
         this.audio.addEventListener('waiting', () => {
             console.log(`[AudioPlayer] Stream buffering (waiting event). Current buffered ahead: ${this.getBufferedAhead().toFixed(2)}s`);
             this.isLoading = true;
-            this.updatePlayButton();
-            this.renderQueue();
+            if (!document.hidden) {
+                this.updatePlayButton();
+                this.renderQueue();
+            } else {
+                this.updateMediaSessionPlaybackState();
+            }
             this.startLoadingBeep();
         });
         this.audio.addEventListener('stalled', () => {
             if (this.isPlaying && !this._userRequestedPause && !this.isChangingTrack) {
                 console.log("[AudioPlayer] Audio stream stalled, waiting for network data...");
                 this.isLoading = true;
-                this.updatePlayButton();
+                if (!document.hidden) {
+                    this.updatePlayButton();
+                } else {
+                    this.updateMediaSessionPlaybackState();
+                }
+                if (this.audio && this.audio.paused) {
+                    this.scheduleBufferResume(1500);
+                }
             }
         });
 
@@ -187,7 +202,7 @@ class AudioPlayer {
             this.isPlaying = true;
             this._userRequestedPause = false;
             this.errorRetryCount = 0;
-            if (this.audioCtx && this.audioCtx.state === 'suspended' && !document.hidden) {
+            if (this.audioCtx && this.audioCtx.state === 'suspended') {
                 this.audioCtx.resume().catch(() => {});
             }
             if (!document.hidden) {
@@ -221,17 +236,20 @@ class AudioPlayer {
                 return;
             }
 
-            // Involuntary pause caused by mobile OS buffer underrun or audio ducking:
-            // CRITICAL: DO NOT force immediate audio.play() on a short timeout here!
-            // When mobile Chrome is buffering or underruns at the start of a song in the background,
-            // calling audio.play() interrupts the browser's native buffer accumulation and forces
-            // playback with empty buffers, creating an endless stutter loop ("entrecortado").
-            // The browser will automatically resume playback as soon as the buffer is filled.
+            // Involuntary pause caused by mobile OS buffer underrun, Android Doze, or transient audio ducking:
+            // If the audio pauses without user intent, we must NOT let it sit paused forever (which freezes
+            // the PWA tab in background Doze mode), but we must NOT force an immediate 200ms resume either
+            // (which causes the 50ms-burst stutter loop before new buffer has arrived).
+            // Instead, we schedule a buffer-backed resume: wait for 'canplaythrough' or 'progress' to build
+            // >= 1.5s of buffer, with a safe debounced timer (1200ms) fallback.
             if (this.isPlaying) {
                 this.isLoading = true;
                 if (!document.hidden) {
                     this.updatePlayButton();
+                } else {
+                    this.updateMediaSessionPlaybackState();
                 }
+                this.scheduleBufferResume(1200);
             }
         });
 
@@ -385,12 +403,43 @@ class AudioPlayer {
         }
     }
 
-    scheduleBufferResume() {
+    scheduleBufferResume(delayMs = 1200) {
         this.clearBufferResumeListeners();
-        this._autoResumeTimer = setTimeout(() => {
+
+        if (this._userRequestedPause || !this.isPlaying || !this.audio || this.isChangingTrack) return;
+
+        // If audio already has sufficient buffer, resume right away
+        if (this.hasSufficientBuffer(1.5)) {
+            this.attemptResume();
+            return;
+        }
+
+        // 1. Listen for canplaythrough
+        this._bufferCanPlayThroughHandler = () => {
+            console.log("[AudioPlayer] canplaythrough received during buffer resume, attempting playback...");
             this.clearBufferResumeListeners();
             this.attemptResume();
-        }, 300);
+        };
+        this.audio.addEventListener('canplaythrough', this._bufferCanPlayThroughHandler, { once: true });
+
+        // 2. Listen for progress events to resume as soon as buffer has accumulated >= 1.5s
+        this._bufferProgressHandler = () => {
+            if (this.hasSufficientBuffer(1.5)) {
+                console.log(`[AudioPlayer] Sufficient buffer reached (${this.getBufferedAhead().toFixed(2)}s), resuming...`);
+                this.clearBufferResumeListeners();
+                this.attemptResume();
+            }
+        };
+        this.audio.addEventListener('progress', this._bufferProgressHandler);
+
+        // 3. Fallback safety timer
+        this._autoResumeTimer = setTimeout(() => {
+            this.clearBufferResumeListeners();
+            if (this.isPlaying && !this._userRequestedPause && this.audio && this.audio.paused && !this.isChangingTrack) {
+                console.log("[AudioPlayer] Buffer resume timer expired, attempting playback resume...");
+                this.attemptResume();
+            }
+        }, delayMs);
     }
 
     attemptResume() {
@@ -398,7 +447,7 @@ class AudioPlayer {
 
         if (this._userRequestedPause || !this.isPlaying || !this.audio || this.isChangingTrack) return;
 
-        if (this.audioCtx && this.audioCtx.state === 'suspended' && !document.hidden) {
+        if (this.audioCtx && this.audioCtx.state === 'suspended') {
             this.audioCtx.resume().catch(() => {});
         }
 
@@ -406,7 +455,13 @@ class AudioPlayer {
             this.audio.play().then(() => {
                 this.isChangingTrack = false;
                 this.isLoading = false;
-                this.updatePlayButton();
+                this.isPlaying = true;
+                this._userRequestedPause = false;
+                if (!document.hidden) {
+                    this.updatePlayButton();
+                } else {
+                    this.updateMediaSessionPlaybackState();
+                }
             }).catch(e => {
                 console.debug("[AudioPlayer] Auto-resume deferred:", e);
                 this.isLoading = false;
@@ -417,7 +472,11 @@ class AudioPlayer {
         } else {
             this.isChangingTrack = false;
             this.isLoading = false;
-            this.updatePlayButton();
+            if (!document.hidden) {
+                this.updatePlayButton();
+            } else {
+                this.updateMediaSessionPlaybackState();
+            }
         }
     }
 
@@ -527,7 +586,7 @@ class AudioPlayer {
 
     setupAudioProcessing() {
         if (this.audioCtx) {
-            if (this.audioCtx.state === 'suspended' && !document.hidden) {
+            if (this.audioCtx.state === 'suspended') {
                 this.audioCtx.resume().catch(() => {});
             }
             return;
@@ -550,8 +609,8 @@ class AudioPlayer {
 
             if (typeof this.audioCtx.addEventListener === 'function') {
                 this.audioCtx.addEventListener('statechange', () => {
-                    if (this.audioCtx.state === 'suspended' && this.isPlaying && !this._userRequestedPause && !document.hidden) {
-                        console.log("[AudioProcessing] AudioContext suspended in background, auto-resuming...");
+                    if (this.audioCtx.state === 'suspended' && this.isPlaying && !this._userRequestedPause) {
+                        console.log("[AudioProcessing] AudioContext suspended, auto-resuming...");
                         this.audioCtx.resume().catch(() => {});
                     }
                 });
@@ -608,7 +667,7 @@ class AudioPlayer {
 
         // 2. If Web Audio pipeline is actively initialized (Equalizer active), also stage gain in Web Audio graph
         if (this.audioCtx && this.compressorNode && this.gainNode) {
-            if (this.audioCtx.state === 'suspended' && !document.hidden) {
+            if (this.audioCtx.state === 'suspended') {
                 this.audioCtx.resume().catch(() => {});
             }
 
@@ -1445,7 +1504,19 @@ class AudioPlayer {
             const mayBeCached = this.isTrackCached(track);
             if (mayBeCached && window.app && window.app.storageManager && trackKey) {
                 try {
-                    const offlineItem = await window.app.storageManager.getOfflineTrack(trackKey);
+                    let offlineItem = await window.app.storageManager.getOfflineTrack(trackKey);
+                    if (!offlineItem && track.filename && track.filename !== trackKey) {
+                        offlineItem = await window.app.storageManager.getOfflineTrack(track.filename);
+                    }
+                    if (!offlineItem && track.id && track.id !== trackKey) {
+                        offlineItem = await window.app.storageManager.getOfflineTrack(track.id);
+                    }
+                    if (!offlineItem && window.app && typeof window.app.getLibraryTrackForItem === 'function') {
+                        const lib = window.app.getLibraryTrackForItem(track);
+                        if (lib && lib.filename) {
+                            offlineItem = await window.app.storageManager.getOfflineTrack(lib.filename);
+                        }
+                    }
                     if (this._loadTrackSeq !== seq) return; // Stale async call discarded
                     if (offlineItem && offlineItem.blob && offlineItem.blob.size > 10000) {
                         this.activeBlob = offlineItem.blob;
@@ -1546,11 +1617,7 @@ class AudioPlayer {
                         if (err && err.name === 'NotAllowedError') {
                             this.isPlaying = false;
                         } else {
-                            setTimeout(() => {
-                                if (this._loadTrackSeq === seq && this.isPlaying && !this._userRequestedPause) {
-                                    this.audio.play().catch(() => {});
-                                }
-                            }, 300);
+                            this.scheduleBufferResume(800);
                         }
                     });
                 }
@@ -2301,10 +2368,8 @@ class AudioPlayer {
         // Trigger background pre-warming on VPS and pre-resolve local blob URL when current song has played >= 15s or <= 45s remain
         if ((cur >= 15 || (remaining > 0 && remaining <= 45)) && !this.isPreloadingNext) {
             this.isPreloadingNext = true;
-            let nextIdx = (this.currentIndex + 1) % this.playlist.length;
-            if (this.isShuffle && this.playlist.length > 1) {
-                nextIdx = Math.floor(Math.random() * this.playlist.length);
-            }
+            const nextIdx = this.findNextTrackIndex('next', this.currentIndex);
+            if (nextIdx === -1) return;
 
             const nextTrack = this.playlist[nextIdx];
             if (!nextTrack) {
@@ -2313,8 +2378,15 @@ class AudioPlayer {
 
             const nextKey = nextTrack.filename || nextTrack.id;
             // Pre-resolve offline blob URL in advance if track is cached in IndexedDB
-            if (window.app && window.app.storageManager && nextKey && this.isTrackCached(nextTrack)) {
-                window.app.storageManager.getOfflineTrack(nextKey).then(offlineItem => {
+            if (window.app && window.app.storageManager && this.isTrackCached(nextTrack)) {
+                (async () => {
+                    let offlineItem = await window.app.storageManager.getOfflineTrack(nextKey);
+                    if (!offlineItem && nextTrack.filename && nextTrack.filename !== nextKey) {
+                        offlineItem = await window.app.storageManager.getOfflineTrack(nextTrack.filename);
+                    }
+                    if (!offlineItem && nextTrack.id && nextTrack.id !== nextKey) {
+                        offlineItem = await window.app.storageManager.getOfflineTrack(nextTrack.id);
+                    }
                     if (offlineItem && offlineItem.blob && offlineItem.blob.size > 10000) {
                         if (this.preloadedNextBlobUrl && this.preloadedNextBlobUrl !== this.currentBlobUrl) {
                             try { URL.revokeObjectURL(this.preloadedNextBlobUrl); } catch (e) {}
@@ -2324,7 +2396,7 @@ class AudioPlayer {
                         this.preloadedNextBlobUrl = URL.createObjectURL(offlineItem.blob);
                         console.log(`[Offline PWA] Pre-resolved offline blob URL for next track: ${nextKey}`);
                     }
-                }).catch(() => {});
+                })().catch(() => {});
             }
 
             const ytTarget = nextTrack.id || (!nextTrack.filename ? `${nextTrack.artist || ''} ${nextTrack.title || ''}`.trim() : null);
@@ -2344,7 +2416,10 @@ class AudioPlayer {
     onAudioError(e) {
         console.error("Audio playback error:", e);
         this.stopLoadingBeep();
-        if (this.errorSkipTimer) clearTimeout(this.errorSkipTimer);
+        if (this.errorSkipTimer) {
+            clearTimeout(this.errorSkipTimer);
+            this.errorSkipTimer = null;
+        }
 
         // Fallback: If offline blob failed to play or decode, fallback to live server stream
         if (this.currentBlobUrl && this.currentIndex >= 0 && this.currentIndex < this.playlist.length) {
@@ -2368,20 +2443,25 @@ class AudioPlayer {
                 this.audio.load();
                 this.audio.play().then(() => {
                     this.isPlaying = true;
+                    this.isChangingTrack = false;
                     this.updatePlayButton();
-                }).catch(console.error);
+                }).catch(err => {
+                    console.error("[AudioPlayer] Fallback server stream also failed:", err);
+                    this.isChangingTrack = false;
+                    this.playNext(true);
+                });
                 return;
             }
         }
 
         if (this.playlist && this.playlist.length > 1) {
-            console.warn(`[AudioPlayer] Stream error on track index ${this.currentIndex}. Advancing to next track...`);
-            if (window.app && window.app.showToast) {
+            console.warn(`[AudioPlayer] Stream error on track index ${this.currentIndex}. Advancing to next track immediately...`);
+            if (window.app && window.app.showToast && !document.hidden) {
                 window.app.showToast("Error en la pista de audio. Pasando a la siguiente...", "warning");
             }
-            this.errorSkipTimer = setTimeout(() => {
-                this.playNext();
-            }, 600);
+            this.isChangingTrack = false;
+            // Advance immediately without relying on background-frozen setTimeout
+            this.playNext(true);
         } else if (this.playlist && this.playlist.length === 1) {
             this.errorRetryCount = (this.errorRetryCount || 0) + 1;
             if (this.errorRetryCount <= 3) {
@@ -2394,11 +2474,13 @@ class AudioPlayer {
             } else {
                 this.isLoading = false;
                 this.isPlaying = false;
+                this.isChangingTrack = false;
                 this.updatePlayButton();
             }
         } else {
             this.isLoading = false;
             this.isPlaying = false;
+            this.isChangingTrack = false;
             this.updatePlayButton();
         }
     }

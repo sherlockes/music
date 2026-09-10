@@ -40,6 +40,57 @@ def format_duration(seconds: Optional[float]) -> str:
         return f"{hours:02d}:{minutes:02d}:{remaining_secs:02d}"
     return f"{minutes:02d}:{remaining_secs:02d}"
 
+def find_audio_file(filename: str) -> Optional[Path]:
+    """
+    Locate an audio file in MUSIC_DIR or NAVIDROME_MUSIC_DIR.
+    Handles:
+    1. Direct match in MUSIC_DIR
+    2. Direct match in NAVIDROME_MUSIC_DIR
+    3. YouTube video ID pattern [video_id] match in both directories
+    4. Case-insensitive exact stem match in both directories
+    """
+    if not filename:
+        return None
+
+    # 1. Direct path in MUSIC_DIR
+    p = MUSIC_DIR / filename
+    if p.exists() and p.is_file():
+        return p
+
+    # 2. Direct path in NAVIDROME_MUSIC_DIR
+    if NAVIDROME_MUSIC_DIR.exists():
+        p_nd = NAVIDROME_MUSIC_DIR / filename
+        if p_nd.exists() and p_nd.is_file():
+            return p_nd
+
+    search_dirs = [d for d in (MUSIC_DIR, NAVIDROME_MUSIC_DIR) if d.exists()]
+
+    # 3. Match by YouTube Video ID: [xxxx]
+    vid_match = re.search(r'\[([a-zA-Z0-9_-]{11})\]', filename)
+    if vid_match:
+        vid = vid_match.group(1)
+        for sdir in search_dirs:
+            try:
+                for candidate in sdir.glob(f"*{vid}*"):
+                    if candidate.is_file() and candidate.suffix.lower() in AUDIO_EXTENSIONS:
+                        return candidate
+            except Exception:
+                pass
+
+    # 4. Case-insensitive stem match
+    target_stem = Path(filename).stem.lower().strip()
+    if target_stem:
+        for sdir in search_dirs:
+            try:
+                for candidate in sdir.iterdir():
+                    if candidate.is_file() and candidate.stem.lower().strip() == target_stem and candidate.suffix.lower() in AUDIO_EXTENSIONS:
+                        return candidate
+            except Exception:
+                pass
+
+    return None
+
+
 import time
 
 _FILE_META_CACHE: Dict[str, Tuple[float, int, Dict[str, Any]]] = {}
@@ -197,8 +248,8 @@ def extract_cover_bytes(filename: str) -> Optional[Tuple[bytes, str]]:
     Extract embedded cover image from an audio file with in-memory caching.
     Returns (image_bytes, mime_type) or None if no cover image found.
     """
-    filepath = MUSIC_DIR / filename
-    if not filepath.exists() or not mutagen:
+    filepath = find_audio_file(filename)
+    if not filepath or not mutagen:
         return None
 
     try:
@@ -320,7 +371,7 @@ def sync_all_navidrome_tracks() -> int:
 
 def delete_track(filename: str) -> bool:
     """Delete a track from MUSIC_DIR and clear caches."""
-    filepath = MUSIC_DIR / filename
+    filepath = find_audio_file(filename) or (MUSIC_DIR / filename)
     _FILE_META_CACHE.pop(filename, None)
     _COVER_CACHE.pop(filename, None)
     invalidate_library_cache()
