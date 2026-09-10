@@ -284,7 +284,7 @@ async def ensure_yt_cache_downloading(safe_id: str, video_url: str):
         ACTIVE_YT_TASKS[safe_id] = task
 
 
-def prewarm_yt_results(results: list, top_n: int = 3):
+def prewarm_yt_results(results: list, top_n: int = 5):
     """Start background stream caching for top_n YouTube tracks from search or trending."""
     count = 0
     for r in results:
@@ -399,9 +399,9 @@ async def api_stream_yt(
     # 2. Ensure background download task is active
     await ensure_yt_cache_downloading(safe_id, video_url)
 
-    # 3. Wait up to 15s for cache_file to complete
+    # 3. Wait up to 5s for cache_file to complete
     start_time = time.time()
-    while (time.time() - start_time) < 15.0:
+    while (time.time() - start_time) < 5.0:
         if cache_file.exists() and cache_file.stat().st_size > 100000:
             return FileResponse(
                 path=cache_file,
