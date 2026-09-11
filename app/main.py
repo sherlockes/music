@@ -400,9 +400,9 @@ async def api_stream_yt(
     # 2. Ensure background download task is active
     await ensure_yt_cache_downloading(safe_id, video_url)
 
-    # 3. Wait up to 8s for cache_file to complete
+    # 3. Wait up to 1.0s for cache_file to complete (prevents mobile OS from freezing background playback)
     start_time = time.time()
-    while (time.time() - start_time) < 8.0:
+    while (time.time() - start_time) < 1.0:
         if cache_file.exists() and cache_file.stat().st_size > 100000:
             return FileResponse(
                 path=cache_file,
@@ -412,7 +412,7 @@ async def api_stream_yt(
         task = ACTIVE_YT_TASKS.get(safe_id)
         if task and task.done() and not cache_file.exists():
             break
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.08)
 
     if cache_file.exists() and cache_file.stat().st_size > 100000:
         return FileResponse(
@@ -421,7 +421,7 @@ async def api_stream_yt(
             headers={"Cache-Control": "public, max-age=86400", "Accept-Ranges": "bytes"}
         )
 
-    # 4. Fallback to direct stream URL
+    # 4. Fallback to direct stream URL immediately so browser receives audio frames without silence
     direct_url = await get_yt_stream_url(video_url)
     if direct_url:
         return RedirectResponse(url=direct_url, status_code=302)
