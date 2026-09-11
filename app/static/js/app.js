@@ -133,17 +133,8 @@ class MusicApp {
         document.addEventListener('DOMContentLoaded', purgeInstallButtons);
 
         if ('serviceWorker' in navigator) {
-            let refreshing = false;
             navigator.serviceWorker.addEventListener('controllerchange', () => {
-                if (refreshing) return;
-                // If user is currently playing music, do not abruptly interrupt playback
-                if (window.app && window.app.player && window.app.player.isPlaying) {
-                    console.log('[PWA] Service Worker updated while playing music; reload deferred until idle.');
-                    return;
-                }
-                refreshing = true;
-                console.log('[PWA] Service Worker controller changed, reloading to apply latest update...');
-                window.location.reload();
+                console.log('[PWA] Service Worker controller changed cleanly without reloading page.');
             });
 
             navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(reg => {

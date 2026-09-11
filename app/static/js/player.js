@@ -16,13 +16,9 @@ class AudioPlayer {
         this.isPlaying = false;
         this.isLoading = false;
 
-        // Offline blob & queue caching
+        // Direct native playback & sequence guards
         this._loadTrackSeq = 0;
-        this.activeBlob = null;
         this.currentBlobUrl = null;
-        this._cachingPromises = new Map();
-        this._cacheQueue = [];
-        this._isProcessingCacheQueue = false;
 
         // Listen & Ranking tracking
         this._currentTrackListened = false;
@@ -467,75 +463,11 @@ class AudioPlayer {
         return cachePromise;
     }
 
-    startQueueCaching() {
-        if (!this.playlist || this.playlist.length === 0) return;
-
-        const order = [];
-        const len = this.playlist.length;
-        const start = (this.currentIndex >= 0 && this.currentIndex < len) ? this.currentIndex : 0;
-
-        // 1. Upcoming sequential tracks from start + 1 to len - 1
-        for (let i = start + 1; i < len; i++) {
-            order.push(this.playlist[i]);
-        }
-        // 2. Earlier tracks from 0 to start - 1
-        for (let i = 0; i < start; i++) {
-            order.push(this.playlist[i]);
-        }
-        // 3. Current track if not already cached
-        if (this.playlist[start]) {
-            order.unshift(this.playlist[start]);
-        }
-
-        this._cacheQueue = order;
-        this._processCacheQueue();
-    }
-
-    async _processCacheQueue() {
-        if (this._isProcessingCacheQueue) return;
-        this._isProcessingCacheQueue = true;
-
-        try {
-            while (this._cacheQueue && this._cacheQueue.length > 0) {
-                const track = this._cacheQueue.shift();
-                if (!track) continue;
-
-                if (this.isTrackCached(track)) continue;
-
-                try {
-                    await this.ensureTrackCached(track);
-                } catch (e) {
-                    console.debug("[AudioPlayer] Error caching queued track:", e);
-                }
-
-                // Short delay between background downloads to avoid choking network/CPU
-                await new Promise(r => setTimeout(r, 250));
-            }
-        } finally {
-            this._isProcessingCacheQueue = false;
-        }
-    }
-
-    priorityCacheTrack(track) {
-        if (!track) return;
-        if (this.isTrackCached(track)) return;
-
-        this._cacheQueue = (this._cacheQueue || []).filter(t => !this.isSameTrack(t, track));
-        this._cacheQueue.unshift(track);
-        this._processCacheQueue();
-    }
-
-    preCacheNextTrack() {
-        this.startQueueCaching();
-    }
-
-    backgroundCacheTrack(track) {
-        if (!track) return;
-        this.priorityCacheTrack(track);
-    }
+    preCacheNextTrack() {}
+    backgroundCacheTrack() {}
 
     // ==========================================
-    // TRACK LOADING & PLAYBACK
+    // TRACK LOADING & PLAYBACK (100% NATIVE HTML5)
     // ==========================================
 
     async loadTrack(index, autoPlay = true) {
@@ -584,35 +516,36 @@ class AudioPlayer {
         }
         this.triggerSaveUserState();
 
-        // 1. Force caching in IndexedDB before playing (Every song added to available tracks is cached first)
-        const blob = await this.ensureTrackCached(track);
+        // 1. Check if track is ALREADY in offline IndexedDB cache (fast check, no network wait!)
+        let playUrl = null;
+        if (window.app && window.app.storageManager && window.app.storageManager.isTrackCached(track)) {
+            try {
+                const trackKey = this.getTrackKey(track);
+                const cached = await window.app.storageManager.getOfflineTrack(trackKey);
+                if (cached && cached.blob && cached.blob.size > 1000) {
+                    if (this.currentBlobUrl) {
+                        try { URL.revokeObjectURL(this.currentBlobUrl); } catch (e) {}
+                    }
+                    this.currentBlobUrl = URL.createObjectURL(cached.blob);
+                    playUrl = this.currentBlobUrl;
+                }
+            } catch (e) {
+                console.debug("[AudioPlayer] Offline cache check skipped:", e);
+            }
+        }
 
-        // Discard if another track was requested while downloading
+        // 2. If not saved offline, stream directly via native HTTP Range stream (Instant start, zero buffer memory!)
+        if (!playUrl) {
+            if (this.currentBlobUrl) {
+                try { URL.revokeObjectURL(this.currentBlobUrl); } catch (e) {}
+                this.currentBlobUrl = null;
+            }
+            playUrl = this.getStreamUrl(track);
+        }
+
         if (this._loadTrackSeq !== seq) return;
 
-        // Clean up previous blob URL with safety timeout
-        const oldBlobUrl = this.currentBlobUrl;
-        if (oldBlobUrl) {
-            setTimeout(() => {
-                try { URL.revokeObjectURL(oldBlobUrl); } catch (e) {}
-            }, 2000);
-            this.currentBlobUrl = null;
-            this.activeBlob = null;
-        }
-
-        // Set audio source to local blob (or direct stream fallback)
-        if (blob) {
-            this.activeBlob = blob;
-            this.currentBlobUrl = URL.createObjectURL(blob);
-            this.audio.src = this.currentBlobUrl;
-        } else {
-            const fallbackUrl = this.getStreamUrl(track);
-            console.warn(`[AudioPlayer] Playing via fallback stream URL for ${titleText}`);
-            this.audio.src = fallbackUrl;
-        }
-
-        // Keep queue caching active for subsequent tracks
-        this.startQueueCaching();
+        this.audio.src = playUrl;
 
         if (autoPlay) {
             this.play();
@@ -761,7 +694,6 @@ class AudioPlayer {
         if (this.playlist.length > 0) {
             this.currentIndex = Math.min(Math.max(0, startIndex), this.playlist.length - 1);
             this.loadTrack(this.currentIndex, autoPlay);
-            this.startQueueCaching();
         } else {
             this.currentIndex = -1;
         }
@@ -808,7 +740,6 @@ class AudioPlayer {
         }
 
         this.loadTrack(insertIdx, true);
-        this.startQueueCaching();
         this.renderQueue();
         this.triggerSaveUserState();
     }
@@ -820,7 +751,6 @@ class AudioPlayer {
             this.playlist = [track];
             this.currentIndex = 0;
             this.loadTrack(0, true);
-            this.startQueueCaching();
             return;
         }
 
@@ -839,9 +769,6 @@ class AudioPlayer {
         this.playlist.splice(insertIdx, 0, track);
         this.renderQueue();
         this.triggerSaveUserState();
-
-        // High priority cache for track being played next
-        this.priorityCacheTrack(track);
     }
 
     addToQueue(track) {
@@ -850,13 +777,11 @@ class AudioPlayer {
             this.playlist = [track];
             this.currentIndex = 0;
             this.loadTrack(0, true);
-            this.startQueueCaching();
             return;
         }
         this.playlist.push(track);
         this.renderQueue();
         this.triggerSaveUserState();
-        this.startQueueCaching();
     }
 
     removeFromQueue(index, silent = false) {

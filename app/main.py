@@ -360,7 +360,7 @@ async def api_preload_yt(v: str = Query(..., description="YouTube Video ID o URL
     return {"status": "prewarming", "safe_id": safe_id}
 
 
-@app.get("/api/stream_yt")
+@app.api_route("/api/stream_yt", methods=["GET", "HEAD"])
 async def api_stream_yt(
     v: str = Query(..., description="YouTube Video ID o URL")
 ):
