@@ -37,7 +37,7 @@
     <meta name="apple-mobile-web-app-title" content="MusicApp">
     <link rel="apple-touch-icon" href="/static/icon-192.png?v=2.0.2">
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=2.2.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=2.2.1">
 </head>
 <body class="bg-dark text-slate-100 min-h-screen">
 
@@ -540,15 +540,6 @@
                             <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
                         </label>
                     </div>
-
-                    <!-- Postponer canciones no cacheadas -->
-                    <div class="flex items-center justify-between p-3 rounded-xl bg-slate-900/80 border border-white/5">
-                        <span class="font-medium text-xs sm:text-sm text-slate-200">Postponer canciones no cacheadas</span>
-                        <label class="relative inline-flex items-center cursor-pointer flex-shrink-0">
-                            <input type="checkbox" id="setting-postpone-uncached" onchange="window.app.togglePostponeUncachedSetting(this.checked)" class="sr-only peer">
-                            <div class="w-11 h-6 bg-slate-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-                        </label>
-                    </div>
                 </div>
             </div>
 
@@ -884,34 +875,6 @@
             <div class="w-full md:flex-1 md:max-w-2xl space-y-0.5 md:space-y-1">
                 <!-- Controls Row -->
                 <div class="flex items-center justify-center gap-2 sm:gap-3.5">
-                    <!-- Equalizer (A la izquierda del modo solo caché) -->
-                    <button id="player-equalizer-btn" onclick="window.player ? window.player.openEqualizerModal() : (window.app && window.app.openEqualizerModal && window.app.openEqualizerModal())" 
-                            class="text-slate-300 hover:text-white hover:bg-white/10 border border-transparent transition p-1.5 rounded-lg flex items-center justify-center relative cursor-pointer" title="Ecualizador (Altos, Medios, Bajos)">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
-                            <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
-                            <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
-                            <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
-                        </svg>
-                        <span id="player-eq-badge" class="hidden absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-purple-400 shadow-sm shadow-purple-500"></span>
-                    </button>
-
-                    <!-- Solo Caché (A la izquierda del modo aleatorio) -->
-                    <button id="player-cache-only-btn" class="text-slate-300 hover:text-white hover:bg-white/10 border border-transparent transition p-1.5 rounded-lg flex items-center justify-center relative cursor-pointer" title="Solo Caché (Reproducir solo canciones descargadas)">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <ellipse cx="12" cy="5" rx="9" ry="3"/>
-                            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
-                            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
-                        </svg>
-                    </button>
-
-                    <!-- Shuffle -->
-                    <button id="player-shuffle-btn" class="text-slate-300 hover:text-white hover:bg-white/10 border border-transparent transition p-1.5 rounded-lg flex items-center justify-center relative cursor-pointer" title="Modo Aleatorio">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <polyline points="16 3 21 3 21 8"/><line x1="4" y1="20" x2="21" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" y1="15" x2="21" y2="21"/><line x1="4" y1="4" x2="9" y2="9"/>
-                        </svg>
-                    </button>
-
                     <!-- Previous -->
                     <button id="player-prev-btn" class="text-gray-300 hover:text-white transition p-1" title="Anterior">
                         <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5 fill-current" viewBox="0 0 24 24">
@@ -1018,130 +981,6 @@
             <!-- Modal Body: Scrollable list of tracks taking full height -->
             <div id="queue-list" class="flex-1 overflow-y-auto space-y-1.5 pr-1.5 custom-scrollbar">
                 <!-- Queue items populated by player.js -->
-            </div>
-        </div>
-    </div>
-
-    <!-- EQUALIZER MODAL -->
-    <div id="modal-equalizer" class="hidden fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4" onclick="if(event.target === this) { if(window.player) window.player.closeEqualizerModal(); else this.classList.add('hidden'); }">
-        <div class="glass-card w-full max-w-md p-5 sm:p-6 space-y-4 shadow-2xl border border-white/15 rounded-2xl relative animate-in fade-in zoom-in-95" onclick="event.stopPropagation()">
-            <!-- Header with Title, EQ Toggle & Close (X) -->
-            <div class="flex items-center justify-between border-b border-white/10 pb-3">
-                <div class="flex items-center gap-2.5">
-                    <div class="w-8 h-8 rounded-xl bg-purple-500/20 text-purple-400 flex items-center justify-center border border-purple-500/30">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
-                            <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
-                            <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
-                            <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
-                        </svg>
-                    </div>
-                    <div>
-                        <h3 class="text-base font-bold text-white">Ecualizador</h3>
-                        <p class="text-[11px] text-purple-300 font-medium">Bajos, Medios y Altos</p>
-                    </div>
-                </div>
-
-                <div class="flex items-center gap-3">
-                    <!-- EQ On/Off Toggle -->
-                    <label class="relative inline-flex items-center cursor-pointer" title="Activar/Desactivar Ecualizador">
-                        <input type="checkbox" id="eq-toggle-enabled" onchange="window.player ? window.player.setEqualizerEnabled(this.checked) : null" class="sr-only peer" checked>
-                        <div class="w-8 h-4.5 bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-purple-600"></div>
-                    </label>
-
-                    <button onclick="if(window.player) window.player.closeEqualizerModal(); else document.getElementById('modal-equalizer').classList.add('hidden');" 
-                            class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-white/5 transition cursor-pointer" title="Cerrar">
-                        <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                    </button>
-                </div>
-            </div>
-
-            <!-- Frequency Response Curve Visualizer Canvas -->
-            <div class="relative w-full rounded-xl bg-slate-950/90 border border-white/10 p-2.5 overflow-hidden shadow-inner flex flex-col items-center">
-                <canvas id="eq-curve-canvas" width="380" height="110" class="w-full h-[110px] block"></canvas>
-            </div>
-
-            <!-- 3 Frequency Sliders (Bajos, Medios, Altos) -->
-            <div class="grid grid-cols-3 gap-3 pt-1">
-                <!-- Bajos (Bass) -->
-                <div class="flex flex-col items-center p-3 rounded-xl bg-slate-900/80 border border-white/10 space-y-2 select-none">
-                    <div class="w-full text-center pointer-events-none">
-                        <span class="text-xs font-bold text-pink-400 tracking-wide">Bajos</span>
-                    </div>
-                    <!-- Interactive Vertical Slider Track -->
-                    <div id="eq-track-bass" class="eq-vertical-track-wrapper h-28 w-full flex items-center justify-center cursor-pointer relative touch-none py-2" data-band="bass">
-                        <!-- Groove -->
-                        <div class="w-1.5 h-full bg-white/15 rounded-full relative pointer-events-none">
-                            <!-- Center 0dB marker line -->
-                            <div class="absolute top-1/2 -left-1.5 w-4.5 h-[1px] bg-white/30 -translate-y-1/2"></div>
-                            <!-- Colored Fill from Center (0dB) -->
-                            <div id="eq-fill-bass" class="absolute w-full bg-gradient-to-b from-pink-400 to-pink-600 rounded-full" style="top: 50%; height: 0%;"></div>
-                            <!-- Draggable Thumb Knob -->
-                            <div id="eq-thumb-bass" class="absolute left-1/2 -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-white shadow-md shadow-pink-500/80 border-2 border-pink-400 pointer-events-none transition-transform active:scale-125" style="top: 50%;"></div>
-                        </div>
-                    </div>
-                    <span class="text-[9px] font-mono text-slate-400 pointer-events-none">120 Hz</span>
-                </div>
-
-                <!-- Medios (Mids) -->
-                <div class="flex flex-col items-center p-3 rounded-xl bg-slate-900/80 border border-white/10 space-y-2 select-none">
-                    <div class="w-full text-center pointer-events-none">
-                        <span class="text-xs font-bold text-purple-400 tracking-wide">Medios</span>
-                    </div>
-                    <!-- Interactive Vertical Slider Track -->
-                    <div id="eq-track-mid" class="eq-vertical-track-wrapper h-28 w-full flex items-center justify-center cursor-pointer relative touch-none py-2" data-band="mid">
-                        <!-- Groove -->
-                        <div class="w-1.5 h-full bg-white/15 rounded-full relative pointer-events-none">
-                            <!-- Center 0dB marker line -->
-                            <div class="absolute top-1/2 -left-1.5 w-4.5 h-[1px] bg-white/30 -translate-y-1/2"></div>
-                            <!-- Colored Fill from Center (0dB) -->
-                            <div id="eq-fill-mid" class="absolute w-full bg-gradient-to-b from-purple-400 to-indigo-600 rounded-full" style="top: 50%; height: 0%;"></div>
-                            <!-- Draggable Thumb Knob -->
-                            <div id="eq-thumb-mid" class="absolute left-1/2 -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-white shadow-md shadow-purple-500/80 border-2 border-purple-400 pointer-events-none transition-transform active:scale-125" style="top: 50%;"></div>
-                        </div>
-                    </div>
-                    <span class="text-[9px] font-mono text-slate-400 pointer-events-none">1 kHz</span>
-                </div>
-
-                <!-- Altos (Treble) -->
-                <div class="flex flex-col items-center p-3 rounded-xl bg-slate-900/80 border border-white/10 space-y-2 select-none">
-                    <div class="w-full text-center pointer-events-none">
-                        <span class="text-xs font-bold text-cyan-400 tracking-wide">Altos</span>
-                    </div>
-                    <!-- Interactive Vertical Slider Track -->
-                    <div id="eq-track-treble" class="eq-vertical-track-wrapper h-28 w-full flex items-center justify-center cursor-pointer relative touch-none py-2" data-band="treble">
-                        <!-- Groove -->
-                        <div class="w-1.5 h-full bg-white/15 rounded-full relative pointer-events-none">
-                            <!-- Center 0dB marker line -->
-                            <div class="absolute top-1/2 -left-1.5 w-4.5 h-[1px] bg-white/30 -translate-y-1/2"></div>
-                            <!-- Colored Fill from Center (0dB) -->
-                            <div id="eq-fill-treble" class="absolute w-full bg-gradient-to-b from-cyan-400 to-sky-600 rounded-full" style="top: 50%; height: 0%;"></div>
-                            <!-- Draggable Thumb Knob -->
-                            <div id="eq-thumb-treble" class="absolute left-1/2 -translate-x-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-white shadow-md shadow-cyan-500/80 border-2 border-cyan-400 pointer-events-none transition-transform active:scale-125" style="top: 50%;"></div>
-                        </div>
-                    </div>
-                    <span class="text-[9px] font-mono text-slate-400 pointer-events-none">6 kHz</span>
-                </div>
-            </div>
-
-            <!-- Quick Presets -->
-            <div class="space-y-1.5 pt-1">
-                <div class="flex items-center justify-between">
-                    <span class="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">Ajustes Rápidos</span>
-                    <button onclick="if(window.player) window.player.resetEqualizer()" class="text-[11px] text-purple-400 hover:text-purple-300 transition underline cursor-pointer">Restablecer</button>
-                </div>
-                <div class="grid grid-cols-4 gap-1.5 text-center">
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('flat')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Plano</button>
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('bass_boost')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Bajos +</button>
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('vocal')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Voces</button>
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('rock')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Rock</button>
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('pop')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Pop</button>
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('electronic')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Electro</button>
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('acoustic')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Acústico</button>
-                    <button onclick="if(window.player) window.player.setEqualizerPreset('treble_boost')" class="eq-preset-btn px-2 py-1.5 rounded-lg bg-slate-900/80 hover:bg-purple-900/40 border border-white/10 hover:border-purple-500/40 text-[11px] font-medium text-slate-300 hover:text-white transition cursor-pointer">Altos +</button>
-                </div>
             </div>
         </div>
     </div>
@@ -1591,8 +1430,8 @@
     <div id="toast-container" class="fixed top-20 right-6 z-50 space-y-2 max-w-sm pointer-events-none"></div>
 
     <!-- JS Scripts -->
-    <script src="/static/js/player.js?v=2.2.0"></script>
-    <script src="/static/js/rclone.js?v=2.2.0"></script>
-    <script src="/static/js/app.js?v=2.2.0"></script>
+    <script src="/static/js/player.js?v=2.2.1"></script>
+    <script src="/static/js/rclone.js?v=2.2.1"></script>
+    <script src="/static/js/app.js?v=2.2.1"></script>
 </body>
 </html>

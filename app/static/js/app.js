@@ -683,6 +683,10 @@ class MusicApp {
                 this.saveUserState(true);
             } else if (document.visibilityState === 'visible') {
                 this.pollDownloads();
+                if (this.storageManager) {
+                    this.storageManager.refreshLocalStorageUI();
+                    this.storageManager.autoCleanOfflineCache();
+                }
             }
         });
         setInterval(() => {
@@ -2481,21 +2485,11 @@ class MusicApp {
     }
 
     openEqualizerModal() {
-        if (window.player && typeof window.player.openEqualizerModal === 'function') {
-            window.player.openEqualizerModal();
-        } else {
-            const modal = document.getElementById('modal-equalizer');
-            if (modal) modal.classList.remove('hidden');
-        }
+        // Equalizer removed
     }
 
     closeEqualizerModal() {
-        if (window.player && typeof window.player.closeEqualizerModal === 'function') {
-            window.player.closeEqualizerModal();
-        } else {
-            const modal = document.getElementById('modal-equalizer');
-            if (modal) modal.classList.add('hidden');
-        }
+        // Equalizer removed
     }
 
     closeSleepTimerModal() {
@@ -3928,13 +3922,6 @@ class MusicApp {
         if (previewCheckbox) {
             previewCheckbox.checked = this.modalPreviewEnabled;
         }
-
-        // Postpone uncached setting
-        const postponeCheckbox = document.getElementById('setting-postpone-uncached');
-        const isPostponeEnabled = window.player ? !!window.player.postponeUncached : (localStorage.getItem('music_app_postpone_uncached') === 'true');
-        if (postponeCheckbox) {
-            postponeCheckbox.checked = isPostponeEnabled;
-        }
     }
 
     toggleTrimSilenceSetting(checked) {
@@ -3975,15 +3962,7 @@ class MusicApp {
         this.saveUserState();
     }
 
-    togglePostponeUncachedSetting(checked) {
-        if (window.player && typeof window.player.setPostponeUncached === 'function') {
-            window.player.setPostponeUncached(checked);
-        } else {
-            localStorage.setItem('music_app_postpone_uncached', checked ? 'true' : 'false');
-        }
-        this.showToast(checked ? 'Postponer canciones no cacheadas activado' : 'Postponer canciones no cacheadas desactivado', 'info');
-        this.saveUserState();
-    }
+
 
     async loadStorageView() {
         if (this.storageManager) {
@@ -4375,20 +4354,22 @@ class StorageManager {
                     if (metadata.id) this.cachedKeys.add(metadata.id);
                 }
             }
-            this.refreshLocalStorageUI();
-            this.autoCleanOfflineCache();
-            if (this.app) {
-                if (typeof this.app.applyLibraryFilters === 'function' && this.app.libraryTracks) {
-                    this.app.applyLibraryFilters();
-                }
-                if (this.app.currentTab === 'settings' || this.app.currentTab === 'storage') {
-                    if (typeof this.app.loadSettingsView === 'function') {
-                        this.app.loadSettingsView();
+            if (!document.hidden) {
+                this.refreshLocalStorageUI();
+                this.autoCleanOfflineCache();
+                if (this.app) {
+                    if (typeof this.app.applyLibraryFilters === 'function' && this.app.libraryTracks) {
+                        this.app.applyLibraryFilters();
+                    }
+                    if (this.app.currentTab === 'settings' || this.app.currentTab === 'storage') {
+                        if (typeof this.app.loadSettingsView === 'function') {
+                            this.app.loadSettingsView();
+                        }
                     }
                 }
-            }
-            if (window.player && typeof window.player.renderQueue === 'function') {
-                window.player.renderQueue();
+                if (window.player && typeof window.player.renderQueue === 'function') {
+                    window.player.renderQueue();
+                }
             }
         };
     }
@@ -4408,6 +4389,7 @@ class StorageManager {
     }
 
     async autoCleanOfflineCache() {
+        if (document.hidden) return;
         const db = await this.ensureDb();
         if (!db) return;
         const tracks = await this.getAllOfflineTracks();
