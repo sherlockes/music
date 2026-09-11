@@ -1,4 +1,4 @@
-# 🎵 Music Cloud App (v2.1.0)
+# 🎵 Music Cloud App (v2.2.5)
 
 > **Buscador de Artistas y Discografía, Descargador de YouTube y Reproductor Cloud con Rclone & WireGuard VPN.**
 
@@ -6,7 +6,32 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 
 ---
 
-## ✨ Novedades de la Versión 2.0 (v2.0.0 – v2.1.0)
+## ✨ Novedades de la Versión 2.2 (v2.2.0 – v2.2.5)
+
+* 🚀 **Solución Definitiva a la Reproducción en Segundo Plano y Pantalla Apagada (Mobile PWA & Screen-Off Fix - v2.2.5)**:
+  * **Diagnóstico de la Causa Raíz en Móviles (Android / iOS)**:
+    * *Restricciones del Ciclo de Vida Móvil*: Los navegadores móviles (WebKit en iOS, Chromium en Android) suspenden la autorización de reproducción en segundo plano (*user activation token*) si se instancian nuevos elementos de audio en diferido. El uso de elementos duales alternantes (`audioA` / `audioB`) en segundo plano fracasa arrojando `NotAllowedError`.
+    * *Suspensión de Web Audio API*: Al bloquear la pantalla o cambiar de pestaña, el sistema operativo congela o suspende el `AudioContext`. Si el audio pasa por nodos de Web Audio (`createMediaElementSource`), la suspensión del contexto silencia o distorsiona el flujo.
+    * *Pérdida de la cadena de eventos sincrónica*: En el evento `ended`, cualquier llamada asíncrona (`await ...`) previa a `audio.play()` rompe la continuidad de autorización ante el navegador móvil.
+    * *Inanición por latencia de red*: Tiempos de espera prolongados en el streaming de backend hacían que el hilo móvil se congelara por inactividad tras varios segundos con la pantalla apagada.
+  * **Solución de Ingeniería e Implementación**:
+    * **Instancia Única y Persistente de `<audio>`**: Todo el reproductor opera sobre un único elemento HTML5 Audio nativo, inicializado en la primera interacción del usuario. Nunca se recrea ni se destruye.
+    * **Transición Síncrona Inmediata en `ended`**: Al finalizar una pista, la asignación de `audio.src` y la llamada `audio.play()` ocurren de forma estrictamente síncrona en el mismo ciclo del evento, preservando la sesión de audio del sistema.
+    * **Pre-cacheo Proactivo en IndexedDB (`prepareNextTrack` y `preCachePlaylist`)**: Mientras suena la pista actual (incluso en reposo), el reproductor descarga y guarda preventivamente la siguiente pista en IndexedDB. Al dispararse `ended`, la siguiente canción ya está lista como `Blob` local (`blob:http...`), iniciándose instantáneamente en 0 ms.
+    * **Bypass de Web Audio API**: Audio nativo directo a través del motor HTML5 sin intermediación de `AudioContext`, garantizando que el sistema operativo mantenga el hilo de reproducción activo.
+    * **Fast Fallback en Backend (`/api/stream_yt`)**: El servidor reduce el tiempo de espera a un máximo de 1.0s; si el stream no está listo de inmediato, emite una redirección HTTP 302 hacia el stream directo de YouTube para evitar que el buffer del móvil quede vacío.
+    * **Prevención de Recarga Involuntaria**: Eliminada la recarga innecesaria que reiniciaba la aplicación al devolver el foco a la ventana o PWA.
+
+* 🎛️ **Simplificación del Reproductor y Centrado Simétrico de Controles**:
+  * **Eliminación de Complejidades Inestables**: Se prescindió del ecualizador gráfico, del modo aleatorio forzado y del selector redundante de "modo sólo caché", garantizando una reproducción nativa ultra-estable.
+  * **Auto-Caché Transparente**: Toda pista agregada a la lista de pistas disponibles se almacena automáticamente en la base de datos local IndexedDB.
+  * **Botonera Centrada y Simétrica**: Se retiró el botón de eliminación de pista de la barra inferior y se trasladó el temporizador de apagado a la izquierda, logrando una disposición equilibrada respecto a Play/Pause:
+    $$\text{[Temporizador]} \quad \text{[Anterior]} \quad \mathbf{[Play / Pause]} \quad \text{[Siguiente]} \quad \text{[Pistas/Cola]}$$
+  * **Bumping de Versión y Cache-Busting (v2.2.5)**: Actualización del identificador en cabecera y en el Service Worker (`music-app-v2.2.5`) para invalidar cachés obsoletas en clientes PWA.
+
+---
+
+## 📦 Novedades de la Versión 2.0 (v2.0.0 – v2.1.0)
 
 * 🔊 **Eliminación Definitiva del Sonido Entrecortado en PWA y Pantalla Bloqueada (v2.1.0)**:
   * **Solución al entrecorte inicial en segundo plano**: Corregido el problema por el cual al bloquear la pantalla del móvil, la reproducción sufría micro-cortes y sonaba entrecortada durante los primeros segundos del tema.
@@ -89,14 +114,15 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 * **Etiquetado ID3 automático (`mutagen`)**: Inserta título oficial, artista, álbum, año y carátula HD (1000x1000) de Deezer directamente en los tags del archivo MP3.
 * **Streaming nativo con HTTP Range (`206 Partial Content`)**: Adelanta o rebobina canciones al instante sin tiempos de espera ni cortes de socket.
 
-### 🎛️ 4. Reproductor Avanzado con Ecualizador y Temporizador
-* **Ecualizador paramétrico Web Audio API**: Presets de audio (Rock, Pop, Jazz, Bass Boost, etc.) y normalización automática de volumen integrada.
-* **Temporizador de apagado programable (Sleep Timer)**: Por tiempo fijo o condicional (fin de canción / fin de lista) con *soft fade out*.
+### 🎛️ 4. Reproductor Nativo Resiliente en Segundo Plano y Temporizador
+* **Motor HTML5 Audio Nativo**: Reproducción ultra-estable sin interrupciones con pantalla apagada en iOS/Android y PWA, transición síncrona en `ended` y bypass de `AudioContext`.
+* **Pre-Caché Proactivo en IndexedDB**: Descarga y almacenamiento local preventivo de las siguientes pistas de la cola mientras suena la música, permitiendo reproducción instantánea sin consumo de datos móviles ni latencia.
+* **Temporizador de apagado programable (Sleep Timer)**: Por tiempo fijo o condicional (fin de canción / fin de lista) con *soft fade out* progresivo.
 * **Ordenación mensual inteligente («Top mes»)**: Alternancia bidireccional continua (más a menos ↓ / menos a más ↑) basada en los últimos 30 días con badges numéricos de reproducción.
 
-### 📱 5. PWA (Progressive Web App) y Modo Solo Caché
+### 📱 5. PWA (Progressive Web App) y Auto-Caché Local
 * **Instalable en móvil y escritorio**: Integración con pantalla de bloqueo y controles del sistema (**MediaSession API**).
-* **Modo Offline & Modo Solo Caché**: Reproducción local mediante IndexedDB sin conexión o para evitar consumo de datos móviles con salto inteligente.
+* **Auto-Caché Transparente**: Almacenamiento local mediante IndexedDB de las canciones añadidas a la cola para reproducción fluida sin conexión.
 
 ### ✏️ 6. Edición ID3 y Sustitución de Versiones
 * **Editor de metadatos**: Modificación directa de título y artista con actualización física en las etiquetas ID3 del archivo MP3.
@@ -109,6 +135,128 @@ Aplicación web autocontenida (Docker / PWA) diseñada para explorar discografí
 ### 🔒 8. Seguridad & Almacenamiento en la Nube con Purga LRU
 * **Túnel WireGuard VPN**: Todo el tráfico saliente hacia YouTube y servicios externos pasa obligatoriamente por un contenedor WireGuard (`service:vpn_tunnel`), ocultando la IP local.
 * **Montaje Rclone VFS & Cuota Inteligente**: Conexión con Google Drive, OneDrive, Dropbox, SFTP o WebDAV con caché completa y purga automática de espacio por política LRU.
+
+---
+
+## 🎵 Arquitectura y Modo de Implementación del Reproductor (`player.js`)
+
+El reproductor de audio (`app/static/js/player.js`) ha sido diseñado específicamente para superar las estrictas restricciones de ahorro de energía y ciclo de vida en navegadores móviles (**iOS Safari / WebKit** y **Android Chrome / Chromium**), tanto en pestaña web convencional como instalada como **PWA (Progressive Web App)**.
+
+### 1. Principios de Diseño para Segundo Plano y Pantalla Apagada
+
+| Desafío en Dispositivos Móviles | Causa Técnica | Solución Implementada en `player.js` |
+|---|---|---|
+| **Pausa forzada al cambiar de pista** | El navegador revoca la autorización de reproducción si se crea una nueva instancia de audio en diferido. | **Instancia Única**: Se reutiliza un único objeto `new Audio()` persistente durante todo el ciclo de vida de la aplicación. |
+| **Pausa al usar llamadas asíncronas** | `await resolverUrl(); audio.play()` rompe la confianza de la interacción (*user gesture token*). | **Transición Síncrona**: En el evento `ended`, el cambio de `src` y llamada a `.play()` ocurren de forma inmediata y sincrónica. |
+| **Suspensión de sonido por Web Audio** | El sistema operativo suspende el `AudioContext` en reposo para ahorrar batería. | **Bypass Web Audio**: Audio nativo directo sin nodos intermedios de Web Audio API en la reproducción principal. |
+| **Microcortes por latencia de red celular** | Las conexiones celulares suspenden la transferencia de datos en reposo profundo. | **Pre-Caché Proactivo**: La siguiente pista se descarga como `Blob` en IndexedDB mientras suena la actual. |
+| **Bloqueo en streaming de YouTube** | El proxy de streaming tardaba hasta 8s esperando paquetes iniciales de YouTube. | **Fast Fallback (302)**: Si el buffer tarda más de 1s, el backend redirige directamente a la URL de YouTube. |
+
+### 2. Flujo de Transición Continua entre Pistas
+
+```mermaid
+flowchart TD
+    A["Pista Actual en Reproducción<br/>(Pantalla Apagada / PWA)"] --> B["prepareNextTrack()<br/>Descarga asíncrona en segundo plano"]
+    B --> C["IndexedDB ('music_player_cache')<br/>Almacena pista como Blob local"]
+    A --> D["Evento 'ended'<br/>(Canción finalizada)"]
+    D --> E["onTrackEnded()<br/>(Transición 100% Síncrona)"]
+    C -. "Blob URL lista (blob:http...)" .-> E
+    E --> F["this.audio.src = nextBlobUrl"]
+    F --> G["this.audio.play()<br/>(Invocado de inmediato sin await)"]
+    G --> H["Reproducción Continua Garantizada<br/>(Sin interrupciones ni recargas)"]
+```
+
+### 3. Implementación Paso a Paso del Reproductor
+
+A continuación se detalla la estructura canónica y los métodos clave que componen el reproductor:
+
+#### A. Inicialización del Motor de Audio
+```javascript
+// Instancia única persistente a nivel de clase
+this.audio = new Audio();
+this.audio.preload = 'auto';
+
+// Escuchadores de ciclo de vida nativos
+this.audio.addEventListener('ended', () => this.onTrackEnded());
+this.audio.addEventListener('error', (e) => this.onAudioError(e));
+this.audio.addEventListener('playing', () => this.onPlayStateChange(true));
+this.audio.addEventListener('pause', () => this.onPlayStateChange(false));
+this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
+```
+
+#### B. Transición Síncrona en Fin de Pista (`ended`)
+El navegador solo permite iniciar la siguiente pista sin gesto directo del usuario si la llamada ocurre **dentro de la pila de llamadas síncronas del evento `ended`**:
+```javascript
+onTrackEnded() {
+    // 1. Comprobar sleep timer si está fijado a fin de pista o tiempo cumplido
+    if (this.checkSleepTimerOnEnd()) return;
+
+    // 2. Transición síncrona inmediata al siguiente tema
+    this.nextTrackSync();
+}
+
+nextTrackSync() {
+    this.currentIndex = (this.currentIndex + 1) % this.queue.length;
+    const track = this.queue[this.currentIndex];
+
+    // Obtener URL síncrona (preparada previamente en caché como Blob URL o URL directa)
+    const playUrl = track._preparedUrl || this.getDirectTrackUrl(track);
+
+    // Asignación y reproducción síncrona obligatoria
+    this.audio.src = playUrl;
+    this.audio.play().catch(err => console.warn("Error reproducción síncrona:", err));
+
+    this.updateMediaSession(track);
+    this.prepareNextTrack(); // Iniciar preparación de la siguiente pista en segundo plano
+}
+```
+
+#### C. Pre-Caché Proactivo en IndexedDB
+Descarga la siguiente pista mientras la actual aún se está reproduciendo:
+```javascript
+async prepareNextTrack() {
+    const nextIndex = (this.currentIndex + 1) % this.queue.length;
+    const nextTrack = this.queue[nextIndex];
+    if (!nextTrack) return;
+
+    // 1. Verificar si ya existe en IndexedDB
+    let blob = await this.getCachedTrackBlob(nextTrack.id);
+    if (!blob) {
+        // 2. Descargar y almacenar en segundo plano
+        blob = await this.fetchAndCacheTrack(nextTrack);
+    }
+
+    // 3. Crear Object URL para uso síncrono instantáneo al terminar la pista
+    if (blob) {
+        nextTrack._preparedUrl = URL.createObjectURL(blob);
+    }
+}
+```
+
+#### D. Integración con MediaSession API
+Permite el control de la música desde la pantalla de bloqueo, auriculares y Android Auto / Apple CarPlay:
+```javascript
+updateMediaSession(track) {
+    if (!('mediaSession' in navigator)) return;
+
+    navigator.mediaSession.metadata = new MediaMetadata({
+        title: track.title,
+        artist: track.artist,
+        album: track.album || 'Music Cloud',
+        artwork: [
+            { src: track.cover || '/static/icon-192.png', sizes: '512x512', type: 'image/jpeg' }
+        ]
+    });
+
+    navigator.mediaSession.setActionHandler('play', () => this.resume());
+    navigator.mediaSession.setActionHandler('pause', () => this.pause());
+    navigator.mediaSession.setActionHandler('previoustrack', () => this.prevTrack());
+    navigator.mediaSession.setActionHandler('nexttrack', () => this.nextTrack());
+    navigator.mediaSession.setActionHandler('seekto', (details) => {
+        if (details.seekTime) this.audio.currentTime = details.seekTime;
+    });
+}
+```
 
 ---
 
@@ -135,7 +283,7 @@ music/
     │   ├── css/style.css       # Estilos Dark Glassmorphic modernos
     │   ├── js/
     │   │   ├── app.js          # Controlador SPA, buscador, edición ID3 y modales
-    │   │   ├── player.js       # Motor de audio Web Audio API, EQ, temporizador y cola inteligente
+    │   │   ├── player.js       # Motor de audio nativo resiliente, pre-caché IndexedDB y temporizador
     │   │   └── rclone.js       # Monitorización y gestión de Rclone
     │   ├── sw.js               # Service Worker para capacidades PWA y caché offline
     │   └── manifest.json       # Manifiesto PWA
