@@ -4,11 +4,18 @@
  */
 class AudioPlayer {
     constructor() {
-        // Native HTML5 Audio (Direct OS media decoding, no Web Audio routing to avoid screen-off throttling)
-        this.audio = new Audio();
-        this.audio.preload = 'auto';
-        this.audio.volume = 1.0;
+        // Dual native HTML5 Audio elements for seamless background transition & preloading
+        this.audioA = new Audio();
+        this.audioB = new Audio();
+        this.audioA.preload = 'auto';
+        this.audioB.preload = 'auto';
+        this.audioA.volume = 1.0;
+        this.audioB.volume = 1.0;
         this.userVolume = 1.0;
+
+        this.currentAudio = this.audioA;
+        this.nextAudio = this.audioB;
+        this._primed = false;
 
         // Playback state
         this.playlist = [];
@@ -16,9 +23,13 @@ class AudioPlayer {
         this.isPlaying = false;
         this.isLoading = false;
 
-        // Direct native playback & sequence guards
+        // Preloaded next track state & sequence guards
         this._loadTrackSeq = 0;
+        this._prepSeq = 0;
+        this._preparedTrack = null; // { index, track, url, isBlob }
+        this._preparedBlobUrl = null;
         this.currentBlobUrl = null;
+        this._cachingPromises = new Map();
 
         // Listen & Ranking tracking
         this._currentTrackListened = false;
@@ -45,6 +56,14 @@ class AudioPlayer {
         // DOM Elements and events
         this.initDOMElements();
         this.bindEvents();
+    }
+
+    get audio() {
+        return this.currentAudio;
+    }
+
+    set audio(el) {
+        this.currentAudio = el;
     }
 
     initDOMElements() {
@@ -79,46 +98,71 @@ class AudioPlayer {
     }
 
     bindEvents() {
-        // Audio element native events
-        this.audio.addEventListener('play', () => {
-            this.isPlaying = true;
-            this.isLoading = false;
-            this.updatePlayButton();
-            this.renderQueue();
-            this.updateMediaSessionPlaybackState();
-        });
+        // Native event listeners bound to both dual audio elements
+        const setupAudioListeners = (audioEl) => {
+            audioEl.addEventListener('play', (e) => {
+                if (e.target !== this.currentAudio) return;
+                this.isPlaying = true;
+                this.isLoading = false;
+                this.updatePlayButton();
+                this.renderQueue();
+                this.updateMediaSessionPlaybackState();
+            });
 
-        this.audio.addEventListener('pause', () => {
-            if (this.audio.ended) return;
-            this.isPlaying = false;
-            this.isLoading = false;
-            this.updatePlayButton();
-            this.renderQueue();
-            this.updateMediaSessionPlaybackState();
-        });
+            audioEl.addEventListener('pause', (e) => {
+                if (e.target !== this.currentAudio) return;
+                if (audioEl.ended) return;
+                this.isPlaying = false;
+                this.isLoading = false;
+                this.updatePlayButton();
+                this.renderQueue();
+                this.updateMediaSessionPlaybackState();
+            });
 
-        this.audio.addEventListener('waiting', () => {
-            this.isLoading = true;
-            this.updatePlayButton();
-        });
+            audioEl.addEventListener('waiting', (e) => {
+                if (e.target !== this.currentAudio) return;
+                this.isLoading = true;
+                this.updatePlayButton();
+            });
 
-        this.audio.addEventListener('playing', () => {
-            this.isPlaying = true;
-            this.isLoading = false;
-            this.updatePlayButton();
-            this.updateMediaSessionPlaybackState();
-        });
+            audioEl.addEventListener('playing', (e) => {
+                if (e.target !== this.currentAudio) return;
+                this.isPlaying = true;
+                this.isLoading = false;
+                this.updatePlayButton();
+                this.updateMediaSessionPlaybackState();
+            });
 
-        this.audio.addEventListener('timeupdate', () => this.onTimeUpdate());
-        this.audio.addEventListener('loadedmetadata', () => this.onLoadedMetadata());
-        this.audio.addEventListener('ended', () => this.onTrackEnded());
-        this.audio.addEventListener('error', (e) => this.onAudioError(e));
+            audioEl.addEventListener('timeupdate', (e) => {
+                if (e.target !== this.currentAudio) return;
+                this.onTimeUpdate();
+            });
+
+            audioEl.addEventListener('loadedmetadata', (e) => {
+                if (e.target !== this.currentAudio) return;
+                this.onLoadedMetadata();
+            });
+
+            audioEl.addEventListener('ended', (e) => {
+                if (e.target !== this.currentAudio) return;
+                this.onTrackEnded();
+            });
+
+            audioEl.addEventListener('error', (e) => {
+                if (e.target !== this.currentAudio) return;
+                this.onAudioError(e);
+            });
+        };
+
+        setupAudioListeners(this.audioA);
+        setupAudioListeners(this.audioB);
 
         // Visibility change listener: when user returns or unlocks phone
         document.addEventListener('visibilitychange', () => {
             if (document.visibilityState === 'visible') {
-                if (this.isPlaying && this.audio && this.audio.paused && !this.audio.ended) {
-                    this.audio.play().catch(() => {});
+                if (this.isPlaying && this.currentAudio && this.currentAudio.paused && !this.currentAudio.ended) {
+                    console.log('[AudioPlayer] Visibility changed to visible: checking paused audio state...');
+                    this.currentAudio.play().catch(e => console.debug('[AudioPlayer] Visibility resume error:', e));
                 }
                 this.updatePlayButton();
                 this.renderQueue();
@@ -467,19 +511,40 @@ class AudioPlayer {
     backgroundCacheTrack() {}
 
     // ==========================================
-    // TRACK LOADING & PLAYBACK (100% NATIVE HTML5)
+    // SEAMLESS DUAL-AUDIO PRELOADING & PLAYBACK
     // ==========================================
 
-    async loadTrack(index, autoPlay = true) {
-        if (index < 0 || index >= this.playlist.length) return;
+    _primeAudio() {
+        if (this._primed) return;
+        this._primed = true;
 
-        const seq = ++this._loadTrackSeq;
-        this.currentIndex = index;
-        this._currentTrackListened = false;
-        this.isLoading = true;
-        this.updatePlayButton();
+        // Unlock nextAudio so it retains background autoplay permissions on iOS & Android
+        try {
+            this.nextAudio.muted = true;
+            const silentUri = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+            this.nextAudio.src = silentUri;
+            const p = this.nextAudio.play();
+            if (p && p.then) {
+                p.then(() => {
+                    this.nextAudio.pause();
+                    this.nextAudio.muted = false;
+                    this.nextAudio.removeAttribute('src');
+                }).catch(() => {
+                    this.nextAudio.muted = false;
+                });
+            } else {
+                this.nextAudio.pause();
+                this.nextAudio.muted = false;
+                this.nextAudio.removeAttribute('src');
+            }
+            console.log('[AudioPlayer] Audio elements primed for background playback.');
+        } catch (e) {
+            console.debug('[AudioPlayer] Audio priming failed:', e);
+        }
+    }
 
-        const track = this.playlist[this.currentIndex];
+    updatePlayerUI(track) {
+        if (!track) return;
 
         // Ensure bottom player is visible
         if (this.elBottomPlayer) {
@@ -515,9 +580,127 @@ class AudioPlayer {
             this.renderQueue();
         }
         this.triggerSaveUserState();
+    }
 
-        // 1. Check if track is ALREADY in offline IndexedDB cache (fast check, no network wait!)
+    async prepareNextTrack() {
+        if (!this.playlist || this.playlist.length <= 1) {
+            this._preparedTrack = null;
+            return;
+        }
+
+        const nextIndex = (this.currentIndex + 1) % this.playlist.length;
+        const nextTrack = this.playlist[nextIndex];
+        if (!nextTrack) return;
+
+        // Already prepared for this exact index and track
+        if (this._preparedTrack && this._preparedTrack.index === nextIndex && this.isSameTrack(this._preparedTrack.track, nextTrack)) {
+            return;
+        }
+
+        const seq = ++this._prepSeq;
         let playUrl = null;
+        let blobUrl = null;
+
+        // 1. Check if track is cached in IndexedDB
+        if (window.app && window.app.storageManager && window.app.storageManager.isTrackCached(nextTrack)) {
+            try {
+                const trackKey = this.getTrackKey(nextTrack);
+                const cached = await window.app.storageManager.getOfflineTrack(trackKey);
+                if (cached && cached.blob && cached.blob.size > 1000) {
+                    blobUrl = URL.createObjectURL(cached.blob);
+                    playUrl = blobUrl;
+                }
+            } catch (e) {
+                console.debug("[AudioPlayer] Error retrieving offline track for prep:", e);
+            }
+        }
+
+        // 2. Fallback to direct HTTP range stream
+        if (!playUrl) {
+            playUrl = this.getStreamUrl(nextTrack);
+        }
+
+        if (this._prepSeq !== seq) {
+            if (blobUrl) try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+            return;
+        }
+
+        if (this._preparedBlobUrl && this._preparedBlobUrl !== blobUrl) {
+            try { URL.revokeObjectURL(this._preparedBlobUrl); } catch (e) {}
+        }
+        this._preparedBlobUrl = blobUrl;
+
+        this._preparedTrack = {
+            index: nextIndex,
+            track: nextTrack,
+            url: playUrl,
+            isBlob: !!blobUrl
+        };
+
+        // Assign to nextAudio and buffer in background
+        try {
+            this.nextAudio.preload = 'auto';
+            this.nextAudio.src = playUrl;
+            this.nextAudio.load();
+            console.log(`[AudioPlayer] Preloaded next track #${nextIndex + 1} (${nextTrack.title || nextTrack.filename}) on standby audio.`);
+        } catch (e) {
+            console.warn('[AudioPlayer] Error preloading next track:', e);
+        }
+    }
+
+    _transitionToPreparedTrack() {
+        const prepared = this._preparedTrack;
+        this._preparedTrack = null;
+
+        const oldAudio = this.currentAudio;
+        // Swap currentAudio and nextAudio references immediately
+        this.currentAudio = this.nextAudio;
+        this.nextAudio = oldAudio;
+
+        // Clean up previous audio element
+        try {
+            oldAudio.pause();
+            oldAudio.removeAttribute('src');
+            oldAudio.load();
+        } catch (e) {}
+
+        if (this.currentBlobUrl && this.currentBlobUrl !== prepared.url) {
+            try { URL.revokeObjectURL(this.currentBlobUrl); } catch (e) {}
+        }
+        this.currentBlobUrl = prepared.isBlob ? prepared.url : null;
+        this._preparedBlobUrl = null;
+
+        this.currentIndex = prepared.index;
+        this._currentTrackListened = false;
+
+        // Apply volume to active player
+        this.applyVolume();
+
+        // 1. Play synchronously within the same event tick!
+        this.play();
+
+        // 2. Update UI and MediaSession
+        this.updatePlayerUI(prepared.track);
+
+        // 3. Preload the subsequent track on the now-idle nextAudio
+        this.prepareNextTrack();
+    }
+
+    async loadTrack(index, autoPlay = true) {
+        if (index < 0 || index >= this.playlist.length) return;
+
+        const seq = ++this._loadTrackSeq;
+        this.currentIndex = index;
+        const track = this.playlist[this.currentIndex];
+        this._currentTrackListened = false;
+
+        this.isLoading = true;
+        this.updatePlayButton();
+        this.updatePlayerUI(track);
+
+        // 1. Check if track is ALREADY in offline IndexedDB cache
+        let playUrl = null;
+        let isBlob = false;
         if (window.app && window.app.storageManager && window.app.storageManager.isTrackCached(track)) {
             try {
                 const trackKey = this.getTrackKey(track);
@@ -528,13 +711,14 @@ class AudioPlayer {
                     }
                     this.currentBlobUrl = URL.createObjectURL(cached.blob);
                     playUrl = this.currentBlobUrl;
+                    isBlob = true;
                 }
             } catch (e) {
                 console.debug("[AudioPlayer] Offline cache check skipped:", e);
             }
         }
 
-        // 2. If not saved offline, stream directly via native HTTP Range stream (Instant start, zero buffer memory!)
+        // 2. Fallback to direct HTTP range stream
         if (!playUrl) {
             if (this.currentBlobUrl) {
                 try { URL.revokeObjectURL(this.currentBlobUrl); } catch (e) {}
@@ -545,7 +729,7 @@ class AudioPlayer {
 
         if (this._loadTrackSeq !== seq) return;
 
-        this.audio.src = playUrl;
+        this.currentAudio.src = playUrl;
 
         if (autoPlay) {
             this.play();
@@ -554,26 +738,54 @@ class AudioPlayer {
             this.isPlaying = false;
             this.updatePlayButton();
         }
+
+        // Preload next track in background
+        this.prepareNextTrack();
     }
 
-    play() {
-        if (!this.audio.src) return;
-        this.audio.play().then(() => {
+    async play() {
+        if (!this.currentAudio || !this.currentAudio.src) return;
+        this._primeAudio();
+
+        try {
+            console.log('[AudioPlayer] play()', {
+                hidden: document.hidden,
+                paused: this.currentAudio.paused,
+                readyState: this.currentAudio.readyState,
+                networkState: this.currentAudio.networkState,
+                src: (this.currentAudio.src || '').substring(0, 80)
+            });
+
+            await this.currentAudio.play();
+
+            console.log('[AudioPlayer] PLAY OK', {
+                currentTime: this.currentAudio.currentTime,
+                readyState: this.currentAudio.readyState
+            });
+
             this.isPlaying = true;
             this.isLoading = false;
             this.updatePlayButton();
             this.triggerSaveUserState();
-        }).catch(err => {
-            console.warn("[AudioPlayer] Play error / autoplay blocked:", err);
+
+        } catch (err) {
+            console.error('[AudioPlayer] PLAY FAILED', {
+                name: err?.name,
+                message: err?.message,
+                hidden: document.hidden,
+                readyState: this.currentAudio ? this.currentAudio.readyState : null,
+                networkState: this.currentAudio ? this.currentAudio.networkState : null
+            });
+
             this.isPlaying = false;
             this.isLoading = false;
             this.updatePlayButton();
-        });
+        }
     }
 
     pause() {
-        if (this.audio) {
-            this.audio.pause();
+        if (this.currentAudio) {
+            this.currentAudio.pause();
         }
         this.isPlaying = false;
         this.isLoading = false;
@@ -582,13 +794,14 @@ class AudioPlayer {
     }
 
     togglePlay() {
+        this._primeAudio();
         if (this.currentIndex === -1 && this.playlist.length > 0) {
             this.loadTrack(0, true);
             return;
         }
-        if (!this.audio.src) return;
+        if (!this.currentAudio || !this.currentAudio.src) return;
 
-        if (this.audio.paused) {
+        if (this.currentAudio.paused) {
             this.play();
         } else {
             this.pause();
@@ -598,13 +811,17 @@ class AudioPlayer {
     playNext(autoPlay = true) {
         if (!this.playlist || this.playlist.length === 0) return;
         const nextIdx = (this.currentIndex + 1) % this.playlist.length;
-        this.loadTrack(nextIdx, autoPlay);
+        if (autoPlay && this._preparedTrack && this._preparedTrack.index === nextIdx) {
+            this._transitionToPreparedTrack();
+        } else {
+            this.loadTrack(nextIdx, autoPlay);
+        }
     }
 
     playPrevious() {
         if (!this.playlist || this.playlist.length === 0) return;
-        if (this.audio && this.audio.currentTime > 3) {
-            this.audio.currentTime = 0;
+        if (this.currentAudio && this.currentAudio.currentTime > 3) {
+            this.currentAudio.currentTime = 0;
             return;
         }
         const prevIdx = (this.currentIndex - 1 + this.playlist.length) % this.playlist.length;
@@ -612,8 +829,9 @@ class AudioPlayer {
     }
 
     applyVolume() {
-        if (!this.audio) return;
-        this.audio.volume = Math.max(0.0, Math.min(1.0, this.userVolume));
+        const vol = Math.max(0.0, Math.min(1.0, this.userVolume));
+        if (this.audioA) this.audioA.volume = vol;
+        if (this.audioB) this.audioB.volume = vol;
     }
 
     // ==========================================
@@ -621,9 +839,9 @@ class AudioPlayer {
     // ==========================================
 
     onTimeUpdate() {
-        if (!this.audio.duration) return;
-        const current = this.audio.currentTime;
-        const total = this.audio.duration;
+        if (!this.currentAudio || !this.currentAudio.duration) return;
+        const current = this.currentAudio.currentTime;
+        const total = this.currentAudio.duration;
         const percent = (current / total) * 100;
 
         if (!document.hidden) {
@@ -644,11 +862,14 @@ class AudioPlayer {
     }
 
     onLoadedMetadata() {
-        if (this.elDuration) this.elDuration.innerText = this.formatTime(this.audio.duration || 0);
+        if (this.elDuration && this.currentAudio) {
+            this.elDuration.innerText = this.formatTime(this.currentAudio.duration || 0);
+        }
         this.updateMediaSessionPosition();
     }
 
     onTrackEnded() {
+        console.log('[AudioPlayer] Track playback ended naturally');
         const currentTrack = (this.currentIndex >= 0 && this.currentIndex < this.playlist.length) ? this.playlist[this.currentIndex] : null;
         if (currentTrack) {
             this.recordTrackPlay(currentTrack);
@@ -664,8 +885,23 @@ class AudioPlayer {
             return;
         }
 
-        // Sequential advance
-        this.playNext(true);
+        if (!this.playlist || this.playlist.length === 0) return;
+
+        const nextIndex = (this.currentIndex + 1) % this.playlist.length;
+
+        // Seamless zero-latency transition if preloaded
+        if (this._preparedTrack && this._preparedTrack.index === nextIndex) {
+            console.log(`[AudioPlayer] Executing seamless transition to #${nextIndex + 1}`);
+            this._transitionToPreparedTrack();
+        } else {
+            console.log(`[AudioPlayer] Track #${nextIndex + 1} not preloaded; loading directly without async blocking`);
+            this.currentIndex = nextIndex;
+            const nextTrack = this.playlist[nextIndex];
+            this.currentAudio.src = this.getStreamUrl(nextTrack);
+            this.play();
+            this.updatePlayerUI(nextTrack);
+            this.prepareNextTrack();
+        }
     }
 
     onAudioError(e) {
@@ -688,6 +924,11 @@ class AudioPlayer {
 
     setPlaylist(tracks, startIndex = 0, autoPlay = true) {
         this.playlist = tracks || [];
+        this._preparedTrack = null;
+        if (this._preparedBlobUrl) {
+            try { URL.revokeObjectURL(this._preparedBlobUrl); } catch (e) {}
+            this._preparedBlobUrl = null;
+        }
         if (this.isSortByMonthlyPlays && this.playlist.length > 1) {
             this.sortByMonthlyPlays(false);
         }
@@ -769,6 +1010,7 @@ class AudioPlayer {
         this.playlist.splice(insertIdx, 0, track);
         this.renderQueue();
         this.triggerSaveUserState();
+        this.prepareNextTrack();
     }
 
     addToQueue(track) {
@@ -782,6 +1024,7 @@ class AudioPlayer {
         this.playlist.push(track);
         this.renderQueue();
         this.triggerSaveUserState();
+        this.prepareNextTrack();
     }
 
     removeFromQueue(index, silent = false) {
@@ -798,9 +1041,20 @@ class AudioPlayer {
                 this.currentBlobUrl = null;
                 this.activeBlob = null;
             }
-            if (this.audio) {
-                this.audio.pause();
-                this.audio.src = '';
+            if (this._preparedBlobUrl) {
+                try { URL.revokeObjectURL(this._preparedBlobUrl); } catch (e) {}
+                this._preparedBlobUrl = null;
+            }
+            this._preparedTrack = null;
+            if (this.audioA) {
+                this.audioA.pause();
+                this.audioA.removeAttribute('src');
+                this.audioA.load();
+            }
+            if (this.audioB) {
+                this.audioB.pause();
+                this.audioB.removeAttribute('src');
+                this.audioB.load();
             }
             this.isPlaying = false;
             this.updatePlayButton();
@@ -809,8 +1063,11 @@ class AudioPlayer {
         } else if (isCurrent) {
             const newIndex = index < this.playlist.length ? index : 0;
             this.loadTrack(newIndex, true);
-        } else if (index < this.currentIndex) {
-            this.currentIndex--;
+        } else {
+            if (index < this.currentIndex) {
+                this.currentIndex--;
+            }
+            this.prepareNextTrack();
         }
 
         this.renderQueue();
